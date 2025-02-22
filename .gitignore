@@ -1,1 +1,3 @@
-./loss_parquet_files/**
+logs/* 
+loss_parquet_files/*
+loss_parquet_files/1000058_WLW410_6197.24.parquet
