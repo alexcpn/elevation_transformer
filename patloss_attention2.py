@@ -28,6 +28,12 @@ from datetime import datetime
 datetimesatmp = datetime.now().strftime("%Y%m%d%H%M%S")
 
 outfile = f"./logs/pl_{datetimesatmp}_.log"
+#create logs directory if it does not exist
+if not os.path.exists("logs"):
+    os.makedirs("logs")
+if not os.path.exists("weights"):
+    os.makedirs("weights")
+    
 log.basicConfig(level=log.INFO,
                 format='%(asctime)s - %(message)s',
                 datefmt='%d-%b-%y %H:%M:%S',
@@ -54,7 +60,6 @@ if not os.path.exists(loss_log_file):
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model,max_len=768):
         super().__init__()
-
 
         # Create positional encoding matrix [max_len, d_model]
         pe = torch.zeros(max_len, d_model)
@@ -152,6 +157,13 @@ val_sampler = SubsetRandomSampler(val_indices)
 train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=train_sampler, num_workers=4, pin_memory=True)
 val_loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=val_sampler, num_workers=4, pin_memory=True)
 
+# Calculate total steps for training and validation
+train_steps_per_epoch = len(train_loader)
+val_steps_per_epoch = len(val_loader)
+
+log.info(f"Training steps per epoch: {train_steps_per_epoch}")
+log.info(f"Validation steps per epoch: {val_steps_per_epoch}")
+
 for epoch in range(2):
     model.train()
     epoch_loss = 0.0
@@ -187,6 +199,7 @@ for epoch in range(2):
         optimizer.step()
         if epoch == 0 and step == 1:
             log.info(f"Input Features Shape: {input_features.shape}")  # Expected: (BATCH_SIZE, 4)
+            print(f"Input Features Shape: {input_features}")  # Expected: (BATCH_SIZE, 4)
             log.info(f"Elevation Data Shape: {elevation_data.shape}")  # Expected: (BATCH_SIZE, read_seq_length)
             log.info(f"Path Loss Shape: {path_loss.shape}")  # Expected: (BATCH_SIZE,)
             log.info(f"extra_features_tokens.shape {extra_features_tokens.shape}") #([20, 512])
@@ -199,9 +212,9 @@ for epoch in range(2):
             log.info(f"logits.shape {logits.shape}")
         # print training progress occasionally
         loss_value_list.append((epoch, step, loss.item()))
-        if step % 100 == 0:
+        if step % 1 == 0:
             log.info("[Epoch=%d | Step=%d/%d] loss=%.4f",
-                     epoch+1, step, total_steps,loss.item())
+                     epoch+1, step, train_steps_per_epoch,loss.item())
             data = np.load(loss_log_file,allow_pickle=True)
             loss_history = []
             if "loss" in data:
