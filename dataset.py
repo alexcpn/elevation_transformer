@@ -51,14 +51,16 @@ class PathLossDataset(Dataset):
          
         elevation_data = torch.tensor(row['elevation_data'], dtype=torch.float32)
         seq_len = elevation_data.shape[0]
-
         if seq_len < self.max_len:
-            padding_len = self.max_len - seq_len
-            padding = torch.full((padding_len,), float('-inf'), dtype=torch.float32)
-            elevation_data = torch.cat([elevation_data, padding])
+           padding = torch.zeros(self.max_len - seq_len, dtype=torch.float32)  # ← Safe value
+           elevation_data = torch.cat([elevation_data, padding])
+            
         elif seq_len > self.max_len:
             elevation_data = elevation_data[:self.max_len] #truncate if longer.
 
         path_loss = torch.tensor(row['path_loss'], dtype=torch.float32)
-
-        return extra_features, elevation_data, path_loss
+        
+          # 4. Create CORRECT mask (True = ignore)
+        padding_mask = torch.zeros(self.max_len, dtype=torch.bool)  # Default: don't mask
+        padding_mask[seq_len:] = True  # ← Mask padded positions
+        return extra_features, elevation_data, path_loss,padding_mask
