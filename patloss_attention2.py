@@ -179,10 +179,10 @@ log.info(f"Training steps per epoch: {train_steps_per_epoch}")
 log.info(f"Validation steps per epoch: {val_steps_per_epoch}")
 
 def forward_pass(input_features, elevation_data, target_labels, padding_mask):
-    input_features = input_features.to('cuda')
-    elevation_data = elevation_data.to('cuda')
-    target_labels = target_labels.to('cuda')
-    padding_mask = padding_mask.to('cuda')
+    # input_features = input_features.to('cuda')
+    # elevation_data = elevation_data.to('cuda')
+    # target_labels = target_labels.to('cuda')
+    # padding_mask = padding_mask.to('cuda')
         # project to higher dim
     extra_features_tokens = extra_features_embedding(input_features)
         # Replace elevation_data processing with:
