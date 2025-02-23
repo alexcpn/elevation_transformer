@@ -99,7 +99,6 @@ class PositionalEncoding(nn.Module):
 # )
 
 
-#vocab_size = 100
 seq_length = 765
 d_model = 160  # embediding size
 final_size = 1 # we just want one value
@@ -124,8 +123,11 @@ model = nn.Sequential(input_features_projection,elevation_projection,pos_encodin
                       layer_norm1, prediction_layer2,layer_norm2,prediction_layer3)
 # SGD is unstable and hence we use this
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-
-# with higher learning loss is Nan
+# Set up a learning rate scheduler that reduces the LR when the loss plateaus.
+# Here, we reduce the LR by a factor of 0.5 if there's no improvement for 5 epochs.
+scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer, mode='min', factor=0.5, patience=5, verbose=True
+)
 
 # Place all in GPU
 elevation_projection = elevation_projection.to('cuda')
@@ -150,11 +152,11 @@ parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
 nfiles = len(parquet_files)
 print(f"Number of parquet_files= {nfiles}")
 
-parquet_files = parquet_files[:100]  # Limit to 10 files for testing
+parquet_files = parquet_files[:1000]  # Limit to 10 files for testing
 
 dataset = PathLossDataset(parquet_files)
 dataset_len = len(dataset)
-train_ratio = 0.8
+train_ratio = 0.9
 train_len = int(dataset_len * train_ratio)
 val_len = dataset_len - train_len
 
@@ -216,6 +218,7 @@ for epoch in range(1):
     model.train()
     epoch_loss = 0.0
     num_batches = 0
+    step_loss =0
     for i, (input_features, elevation_data, target_labels,padding_mask) in enumerate(train_loader):
         #print(f"Batch {i}: Extra features shape: {extra_features.shape}, Elevation data shape: {elevation_data.shape}, Path loss shape: {path_loss.shape}")
         step = i + 1
@@ -225,15 +228,16 @@ for epoch in range(1):
         optimizer.zero_grad()
         loss.backward()
         epoch_loss += loss.item()
+        step_loss += loss.item()
         num_batches += 1
 
           # We are not discarding the loss or ignoring it; rather, we’re enforcing a limit on the size of the update to avoid erratic jumps.
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         loss_value_list.append((epoch, step, loss.item()))
-        if step % 1 == 0:
-            log.info("[Epoch=%d | Step=%d/%d] loss=%.4f",
+        log.info("[Epoch=%d | Step=%d/%d] loss=%.4f",
                      epoch+1, step, train_steps_per_epoch,loss.item())
+        if step % 500 == 0:
             data = np.load(loss_log_file,allow_pickle=True)
             loss_history = []
             if "loss" in data:
@@ -243,9 +247,21 @@ for epoch in range(1):
             np.savez_compressed(
                 loss_log_file, loss=np.array(loss_list, dtype=object))
             loss_value_list = []
+        if step % 1000 == 0:
+            # For ReduceLROnPlateau, call scheduler.step() with the average loss
+            avg_loss = step_loss / 500
+            step_loss =0
+            scheduler.step(avg_loss)
+            current_lr = optimizer.param_groups[0]['lr']
+            log.info(f"Epoch {epoch+1}/{step}, Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
+    
 
     avg_epoch_loss = epoch_loss / num_batches
     log.info("---------Epoch %02d | Average Loss: %.4f", epoch+1, avg_epoch_loss)
+    save_path = f"./weights/model_weights{datetimesatmp}.pth"
+    torch.save(model.state_dict(), save_path)
+    log.info(f"Model weights saved at {save_path}")
+    log.info(f"Training Loss saved at {loss_log_file}")
     # do a validation loss
 
     model.eval()
@@ -258,11 +274,11 @@ for epoch in range(1):
         num_valid_batches += 1
         validation_loss += loss.item()
         # Calculate overestimation and underestimation counts
-        predictions = logits.squeeze(1).cpu().detach().numpy()
+        predictions = logits.cpu().detach().numpy()
         targets = target_labels.cpu().detach().numpy()
         diff = predictions - targets
-        overestimation_count += np.sum(diff > 0.2)
-        underestimation_count += np.sum(diff < 0.2)
+        overestimation_count += np.sum(diff > 0.5)
+        underestimation_count += np.sum(diff < 0.5)
     avg_valid_loss = validation_loss / num_valid_batches
     
     log.info("---------Epoch %02d | Average Validation : %.4f", epoch+1, avg_valid_loss)
