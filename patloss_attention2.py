@@ -99,32 +99,31 @@ class PositionalEncoding(nn.Module):
 # )
 
 
-vocab_size = 2000
-d_k = 64  # attention size
-read_seq_length = 765
-d_model = 512  # embediding size
+#vocab_size = 100
+seq_length = 765
+d_model = 160  # embediding size
 final_size = 1 # we just want one value
-num_heads = 8  
+num_heads = 16  
 extra_feature_size = 4
 
-pos_encoding = PositionalEncoding(d_model,read_seq_length)
-extra_features_embedding = nn.Linear(extra_feature_size, d_model)
-multihead_attention = nn.MultiheadAttention(d_model, num_heads, dropout=0.1,batch_first=True)
-prediction_layer1 = nn.Linear(d_model, vocab_size)
-layer_norm1 = nn.LayerNorm(vocab_size)
-prediction_layer2 = nn.Linear(vocab_size, final_size)
-layer_norm2 = nn.LayerNorm(final_size)  # last dimension is the vocab size
+pos_encoding = PositionalEncoding(d_model,seq_length)
+input_features_projection = nn.Linear(extra_feature_size, d_model)
 elevation_projection = nn.Linear(1, d_model)  # Add this to model
+multihead_attention = nn.MultiheadAttention(d_model, num_heads, dropout=0.1,batch_first=True)
+prediction_layer1 = nn.Linear(d_model, d_model)
+layer_norm1 = nn.LayerNorm(d_model)
+prediction_layer2 = nn.Linear(d_model, d_model*4)
+layer_norm2 = nn.LayerNorm(d_model*4) 
+prediction_layer3 = nn.Linear(d_model*4, final_size)
 
 # Define the loss function
 loss_function = nn.SmoothL1Loss() # since we have just regression
 # We'll combine these into a simple pipeline
-model = nn.Sequential(elevation_projection,pos_encoding,
-                      multihead_attention, extra_features_embedding,
-                      layer_norm1, layer_norm2,
-                      prediction_layer1, prediction_layer2)
+model = nn.Sequential(input_features_projection,elevation_projection,pos_encoding,
+                      multihead_attention, prediction_layer1,
+                      layer_norm1, prediction_layer2,layer_norm2,prediction_layer3)
 # SGD is unstable and hence we use this
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
 # with higher learning loss is Nan
 
@@ -132,7 +131,7 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 elevation_projection = elevation_projection.to('cuda')
 pos_encoding.to('cuda')
 multihead_attention.to('cuda')
-extra_features_embedding.to('cuda')
+input_features_projection.to('cuda')
 layer_norm1.to('cuda')
 layer_norm2.to('cuda')
 prediction_layer1.to('cuda')
@@ -151,7 +150,7 @@ parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
 nfiles = len(parquet_files)
 print(f"Number of parquet_files= {nfiles}")
 
-parquet_files = parquet_files[:10]  # Limit to 10 files for testing
+parquet_files = parquet_files[:100]  # Limit to 10 files for testing
 
 dataset = PathLossDataset(parquet_files)
 dataset_len = len(dataset)
@@ -179,27 +178,33 @@ log.info(f"Training steps per epoch: {train_steps_per_epoch}")
 log.info(f"Validation steps per epoch: {val_steps_per_epoch}")
 
 def forward_pass(input_features, elevation_data, target_labels, padding_mask):
-    # input_features = input_features.to('cuda')
-    # elevation_data = elevation_data.to('cuda')
-    # target_labels = target_labels.to('cuda')
-    # padding_mask = padding_mask.to('cuda')
-        # project to higher dim
-    extra_features_tokens = extra_features_embedding(input_features)
-        # Replace elevation_data processing with:
-    elevation_embed = elevation_projection(elevation_data.unsqueeze(-1))  # (B, S, d_model)
-        #print(f"elevation_embed.shape {elevation_embed.shape}") torch.Size([25, 765, 512])
-    pos_embedded_tokens = pos_encoding(elevation_embed) 
-        #print(f"pos_embedded_tokens.shape {pos_embedded_tokens.shape}")  torch.Size([25, 765, 512])
-        #print(f"extra_features_tokens.shape {extra_features_tokens.shape}") torch.Size([25, 512])
-    combined = pos_embedded_tokens + extra_features_tokens.unsqueeze(1)  # [25, 1, 512] # (B, S, d_model)
-    score, _ = multihead_attention(combined, combined, combined,key_padding_mask=padding_mask)
-    hidden1 = score +pos_embedded_tokens
-    pooled_score = hidden1.mean(dim=1)  # ([20, 512])
-    hidden2 = prediction_layer1(pooled_score)  # through few linear layers
-    hidden2 = layer_norm1(hidden2) 
-    logits =  prediction_layer2(hidden2)      # add layer norm
+    input_features = input_features.to('cuda') # (B, 4)
+    elevation_data = elevation_data.to('cuda')  # (B, 765) = (B, S)
+    target_labels = target_labels.to('cuda') # (B, 1)
+    padding_mask = padding_mask.to('cuda')
+    # project to higher dim
+    #print(f"input_features.shape {input_features.shape}") #torch.Size([25, 4])
+    other_features_embed = input_features_projection(input_features) # (B, d_model)
+   # print(f"other_features_embed.shape {other_features_embed.shape}") #t (B, d_model)
+    elevation_embed = elevation_projection(elevation_data.unsqueeze(-1))  
+    #print(f"elevation_embed.shape {elevation_embed.shape}") # (B, S, d_model)
+    pos_embed = pos_encoding(elevation_embed) 
+    #print(f"pos_embed.shape {pos_embed.shape}") # (B, S, d_model)
+    elevation_score, _ = multihead_attention(pos_embed, pos_embed, pos_embed,key_padding_mask=padding_mask)
+    # pool over S
+    elevation_vector = torch.mean(elevation_score, dim=1)  # (B, d_model)
+    #print   (f"Elevation vector shape: {elevation_vector.shape}")
+    combined = other_features_embed + elevation_vector  # (B, d_model)
+    #print(f"Combined shape: {combined.shape}")
+    hidden1 = prediction_layer1(combined)  # through few linear layers
+    residual1 =other_features_embed + hidden1
+    hidden2 = layer_norm1(residual1) 
+    hidden3 =  prediction_layer2(hidden2)      # add layer norm
+    logits  = prediction_layer3(hidden3)
+    # print(f"Logits shape: {logits.shape}") # (B, 1)
+    logits = logits.squeeze(-1)  
     loss = loss_function(
-            logits.squeeze(1),
+            logits,
             target_labels
         )
     del  input_features,elevation_data,target_labels 
@@ -223,7 +228,7 @@ for epoch in range(1):
         num_batches += 1
 
           # We are not discarding the loss or ignoring it; rather, we’re enforcing a limit on the size of the update to avoid erratic jumps.
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         loss_value_list.append((epoch, step, loss.item()))
         if step % 1 == 0:
@@ -249,7 +254,6 @@ for epoch in range(1):
     overestimation_count = 0 # like false positive
     underestimation_count = 0 # like false negative
     for i, (input_features, elevation_data, target_labels,padding_mask) in enumerate(val_loader):
-  
         logits,loss= forward_pass(input_features, elevation_data, target_labels, padding_mask)
         num_valid_batches += 1
         validation_loss += loss.item()
@@ -273,7 +277,7 @@ for epoch in range(1):
 save_path = f"./weights/model_weights{datetimesatmp}.pth"
 torch.save(model.state_dict(), save_path)
 log.info(f"Model weights saved at {save_path}")
-
+log.info(f"Training Loss saved at {loss_log_file}")
 
 log.info(f"Training Over")
 
