@@ -43,8 +43,8 @@ class PathLossDataset(Dataset):
         df = pd.read_parquet(self.parquet_files[file_index])
         row = df.iloc[local_idx]
         extra_features = torch.tensor([
-            row['dEP_FSRx_m'],
-            row['center_freq'],
+            row['dEP_FSRx_m']/1e3,
+            row['center_freq'] / 1e3,
             row['receiver_ht_m'],
             row['accesspoint_ht_m']
         ], dtype=torch.float32)
@@ -52,9 +52,10 @@ class PathLossDataset(Dataset):
         elevation_data = torch.tensor(row['elevation_data'], dtype=torch.float32)
         seq_len = elevation_data.shape[0]
         if seq_len < self.max_len:
-           padding = torch.zeros(self.max_len - seq_len, dtype=torch.float32)  # ← Safe value
-           elevation_data = torch.cat([elevation_data, padding])
-            
+            last_value = elevation_data[-1]
+            # Create a padding tensor by repeating the last value
+            padding = last_value.repeat(self.max_len - seq_len)
+            elevation_data = torch.cat([elevation_data, padding])
         elif seq_len > self.max_len:
             elevation_data = elevation_data[:self.max_len] #truncate if longer.
 

@@ -42,12 +42,13 @@ print(f"Val loader length: {len(val_loader)}")
 #                           batch_size=BATCH_SIZE, shuffle=True,
 #                           num_workers=4, pin_memory=True)
 # Test the DataLoader
-for i, (extra_features, elevation_data, path_loss) in enumerate(train_loader):
+for i, (extra_features, elevation_data, path_loss,_) in enumerate(train_loader):
     print(f"Batch {i}: Extra features shape: {extra_features.shape}, Elevation data shape: {elevation_data.shape}, Path loss shape: {path_loss.shape}")
+    print(f"Extra features: {extra_features}")
     if i == 2:
         break
     
-for i, (extra_features, elevation_data, path_loss) in enumerate(val_loader):
+for i, (extra_features, elevation_data, path_loss,_) in enumerate(val_loader):
     print(f"Batch {i}: Extra features shape: {extra_features.shape}, Elevation data shape: {elevation_data.shape}, Path loss shape: {path_loss.shape}")
     if i == 2:
         break
