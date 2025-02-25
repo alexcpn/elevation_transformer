@@ -118,29 +118,79 @@ num_heads = 16
 extra_feature_size = 4
 
 pos_encoding = PositionalEncoding(d_model,seq_length)
-input_features_projection = nn.Linear(extra_feature_size, d_model)
-elevation_projection = nn.Linear(1, d_model)  # Add this to model
-multihead_attention = nn.MultiheadAttention(d_model, num_heads, dropout=0.1,batch_first=True)
-# multihead_attention = nn.TransformerEncoderLayer(
-#     d_model=d_model,
-#     nhead=num_heads,
-#     dim_feedforward=256,   # or bigger
-#     dropout=0.1,
-#     batch_first=True,
-# )
-prediction_layer1 = nn.Linear(d_model, d_model)
-layer_norm1 = nn.LayerNorm(d_model)
-prediction_layer2 = nn.Linear(d_model, d_model*4)
-layer_norm2 = nn.LayerNorm(d_model*4) 
-prediction_layer3 = nn.Linear(d_model*4, final_size)
 
-# Define the loss function
-loss_function = nn.SmoothL1Loss() # since we have just regression
-# We'll combine these into a simple pipeline
-model = nn.ModuleList([input_features_projection,elevation_projection,pos_encoding,
-                      multihead_attention, prediction_layer1,
-                      layer_norm1, prediction_layer2,layer_norm2,prediction_layer3])
-# SGD is unstable and hence we use this
+class PathLossModel(nn.Module):
+    def __init__(self, 
+                 d_model=160, 
+                 seq_length=765, 
+                 num_heads=16, 
+                 extra_feature_size=4, 
+                 final_size=1):
+        super().__init__()
+        
+        self.input_features_projection = nn.Linear(extra_feature_size, d_model)
+        self.elevation_projection = nn.Linear(1, d_model)
+        self.pos_encoding = PositionalEncoding(d_model, seq_length)
+        self.multihead_attention = nn.MultiheadAttention(d_model, num_heads, 
+                                                         dropout=0.1, 
+                                                         batch_first=True)
+        
+        self.prediction_layer1 = nn.Linear(d_model, d_model)
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.prediction_layer2 = nn.Linear(d_model, d_model*4)
+        self.layer_norm2 = nn.LayerNorm(d_model*4)
+        self.prediction_layer3 = nn.Linear(d_model*4, final_size)
+        
+        self.loss_function = nn.SmoothL1Loss()
+
+    def forward(self, 
+                input_features,      # (B, 4)
+                elevation_data,      # (B, seq_len)
+                target_labels=None,  # (B,) or (B, 1)
+                padding_mask=None):  # (B, seq_len) if you use it
+
+        # 1. Project
+        other_features_embed = self.input_features_projection(input_features) 
+        # shape: (B, d_model)
+
+        # 2. Elevation embedding + positional encoding
+        # shape for elevation_data is (B, seq_len). We want (B, seq_len, 1) for linear
+        elevation_embed = self.elevation_projection(elevation_data.unsqueeze(-1))
+        # shape: (B, seq_len, d_model)
+        
+        pos_embed = self.pos_encoding(elevation_embed)
+        # shape: (B, seq_len, d_model)
+        
+        # 3. Multi-head self-attention
+        #  - If we want to respect the mask, pass key_padding_mask=padding_mask
+        attn_out, _ = self.multihead_attention(pos_embed, pos_embed, pos_embed, 
+                                               key_padding_mask=padding_mask)
+        # shape: (B, seq_len, d_model)
+
+        # 4. Pool over sequence dimension
+        elevation_vector = torch.mean(attn_out, dim=1)  # shape: (B, d_model)
+        
+        # 5. Combine elevation vector with the “other” features
+        combined = other_features_embed + elevation_vector  # shape: (B, d_model)
+        
+        # 6. Pass through your MLP (with ReLU in between)
+        hidden1 = F.relu(self.prediction_layer1(combined))
+        hidden1 = self.layer_norm1(hidden1)
+        
+        hidden2 = F.relu(self.prediction_layer2(hidden1))
+        hidden2 = self.layer_norm2(hidden2)
+        
+        logits = self.prediction_layer3(hidden2).squeeze(-1)  # shape: (B,)
+        
+        # If target_labels is given (training/validation), compute loss
+        loss = None
+        if target_labels is not None:
+            loss = self.loss_function(logits, target_labels)
+
+        return logits, loss
+
+model = PathLossModel()
+model.to('cuda')
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 # Set up a learning rate scheduler that reduces the LR when the loss plateaus.
 # Here, we reduce the LR by a factor of 0.5 if there's no improvement for 5 epochs.
@@ -148,16 +198,6 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, mode='min', factor=0.5, patience=5, verbose=True
 )
 
-# Place all in GPU
-elevation_projection = elevation_projection.to('cuda')
-pos_encoding.to('cuda')
-multihead_attention.to('cuda')
-input_features_projection.to('cuda')
-layer_norm1.to('cuda')
-layer_norm2.to('cuda')
-prediction_layer1.to('cuda')
-prediction_layer2.to('cuda')
-model.to('cuda')
 log.info("Training model...")
 
 BATCH_SIZE = 25  # 5 GB for 
@@ -171,11 +211,11 @@ parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
 nfiles = len(parquet_files)
 print(f"Number of parquet_files= {nfiles}")
 
-parquet_files = parquet_files[:1000]  # Limit to 10 files for testing
+#parquet_files = parquet_files[:100]  # Limit to 10 files for testing
 
 dataset = PathLossDataset(parquet_files)
 dataset_len = len(dataset)
-train_ratio = 0.9
+train_ratio = 0.97
 train_len = int(dataset_len * train_ratio)
 val_len = dataset_len - train_len
 
@@ -198,41 +238,6 @@ val_steps_per_epoch = len(val_loader)
 log.info(f"Training steps per epoch: {train_steps_per_epoch}")
 log.info(f"Validation steps per epoch: {val_steps_per_epoch}")
 
-def forward_pass(input_features, elevation_data, target_labels, padding_mask):
-    input_features = input_features.to('cuda') # (B, 4)
-    elevation_data = elevation_data.to('cuda')  # (B, 765) = (B, S)
-    target_labels = target_labels.to('cuda') # (B, 1)
-    padding_mask = padding_mask.to('cuda')
-    # project to higher dim
-    #print(f"input_features.shape {input_features.shape}") #torch.Size([25, 4])
-    other_features_embed = input_features_projection(input_features) # (B, d_model)
-   # print(f"other_features_embed.shape {other_features_embed.shape}") #t (B, d_model)
-    elevation_embed = elevation_projection(elevation_data.unsqueeze(-1))  
-    #print(f"elevation_embed.shape {elevation_embed.shape}") # (B, S, d_model)
-    pos_embed = pos_encoding(elevation_embed) 
-    #print(f"pos_embed.shape {pos_embed.shape}") # (B, S, d_model)
-    elevation_score, _ = multihead_attention(pos_embed, pos_embed, pos_embed)#,key_padding_mask=padding_mask)
-    #elevation_score = multihead_attention(pos_embed)# Transformer Encoder one
-    # pool over S
-    elevation_vector = torch.mean(elevation_score, dim=1)  # (B, d_model)
-    #print   (f"Elevation vector shape: {elevation_vector.shape}")
-    combined = other_features_embed + elevation_vector  # (B, d_model)
-    #print(f"Combined shape: {combined.shape}")
-    hidden1 = F.relu(prediction_layer1(combined))
-    hidden2 = layer_norm1(hidden1)
-    hidden2 = F.relu(prediction_layer2(hidden2))
-    hidden3 = layer_norm2(hidden2)
-    logits  = prediction_layer3(hidden3)
-    # print(f"Logits shape: {logits.shape}") # (B, 1)
-    logits = logits.squeeze(-1)  
-    loss = loss_function(
-            logits,
-            target_labels
-        )
-    #del  input_features,elevation_data,target_labels 
-    #gc.collect()
-    #torch.cuda.empty_cache()
-    return logits,loss
 
 for epoch in range(1):
     model.train()
@@ -244,7 +249,12 @@ for epoch in range(1):
         step = i + 1
         # Add data validation checks
         # Move to GPU
-        logits, loss = forward_pass(input_features, elevation_data, target_labels, padding_mask)
+        input_features = input_features.to('cuda') # (B, 4)
+        elevation_data = elevation_data.to('cuda')  # (B, 765) = (B, S)
+        target_labels = target_labels.to('cuda') # (B, 1)
+        padding_mask = padding_mask.to('cuda')
+        logits, loss = model(input_features, elevation_data, target_labels=target_labels, 
+                             padding_mask=padding_mask)
         optimizer.zero_grad()
         loss.backward()
         epoch_loss += loss.item()
@@ -255,7 +265,8 @@ for epoch in range(1):
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         loss_value_list.append((epoch, step, loss.item()))
-        log.info("[Epoch=%d | Step=%d/%d] loss=%.4f",
+        if step % 200 == 0:
+            log.info("[Epoch=%d | Step=%d/%d] loss=%.4f",
                      epoch+1, step, train_steps_per_epoch,loss.item())
         if step % 500 == 0:
             data = np.load(loss_log_file,allow_pickle=True)
@@ -267,6 +278,7 @@ for epoch in range(1):
             np.savez_compressed(
                 loss_log_file, loss=np.array(loss_list, dtype=object))
             loss_value_list = []
+            log.info(f"Training Loss saved at {loss_log_file}")
         if step % 1000 == 0:
             # For ReduceLROnPlateau, call scheduler.step() with the average loss
             avg_loss = step_loss / 500
@@ -290,7 +302,12 @@ for epoch in range(1):
     overestimation_count = 0 # like false positive
     underestimation_count = 0 # like false negative
     for i, (input_features, elevation_data, target_labels,padding_mask) in enumerate(val_loader):
-        logits,loss= forward_pass(input_features, elevation_data, target_labels, padding_mask)
+        # Move to GPU
+        input_features = input_features.to('cuda') # (B, 4)
+        elevation_data = elevation_data.to('cuda')  # (B, 765) = (B, S)
+        target_labels = target_labels.to('cuda') # (B, 1)
+        padding_mask = padding_mask.to('cuda')
+        logits,loss= model(input_features, elevation_data, target_labels, padding_mask)
         num_valid_batches += 1
         validation_loss += loss.item()
         # Calculate overestimation and underestimation counts
@@ -299,6 +316,8 @@ for epoch in range(1):
         diff = predictions - targets
         overestimation_count += np.sum(diff > 0.5)
         underestimation_count += np.sum(diff < 0.5)
+        if num_valid_batches > 1000:
+            break # nough for now
     avg_valid_loss = validation_loss / num_valid_batches
     
     log.info("---------Epoch %02d | Average Validation : %.4f", epoch+1, avg_valid_loss)
