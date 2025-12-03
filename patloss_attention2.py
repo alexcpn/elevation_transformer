@@ -23,6 +23,7 @@ import gc
 import pandas as pd
 import glob
 from datetime import datetime
+import sys
 
 
 datetimesatmp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -73,6 +74,27 @@ class PositionalEncodingSinuSoidal(nn.Module):
         seq_len = x.size(1)
         return x + self.pe[:, :seq_len, :]  # Directly add to 3D input   
     
+class ConvPooling(nn.Module):
+    def __init__(self, d_model, hidden_dim=128, kernel_size=3):
+        super().__init__()
+        self.conv1 = nn.Conv1d(in_channels=d_model, out_channels=hidden_dim, 
+                               kernel_size=kernel_size, padding=kernel_size//2)
+        self.relu = nn.ReLU()
+        self.conv2 = nn.Conv1d(in_channels=hidden_dim, out_channels=hidden_dim, 
+                               kernel_size=kernel_size, padding=kernel_size//2)
+        # Global pooling to reduce sequence dimension to a single vector.
+        self.global_pool = nn.AdaptiveMaxPool1d(1)
+        
+    def forward(self, x):
+        # x has shape (B, S, d_model). We need to transpose to (B, d_model, S)
+        x = x.transpose(1, 2)
+        x = self.relu(self.conv1(x))
+        x = self.relu(self.conv2(x))
+        # Apply global pooling over the sequence dimension
+        x = self.global_pool(x)  # (B, hidden_dim, 1)
+        x = x.squeeze(-1)  # (B, hidden_dim)
+        return x
+
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len):
         super().__init__()
@@ -85,30 +107,6 @@ class PositionalEncoding(nn.Module):
         positions = torch.arange(seq_len, device=x.device).unsqueeze(0)  # (1, seq_len)
         pe = self.pe(positions)  # (1, seq_len, d_model)
         return x + pe
-# Instead of doing Multi head sequentially like previous, lets do it in parallel
-
-# Replace ModuleList with Sequential:
-# class TransformerBlock(nn.Module):
-#     def __init__(self):
-#         super().__init__()
-#         self.attn = nn.MultiheadAttention(d_model, num_heads, batch_first=True)
-#         self.ffn = nn.Sequential(
-#             nn.Linear(d_model, 4*d_model),
-#             nn.ReLU(),
-#             nn.Linear(4*d_model, d_model)
-#         )
-#         self.norm1 = nn.LayerNorm(d_model)
-#         self.norm2 = nn.LayerNorm(d_model)
-    
-#     def forward(self, x):
-#         x = self.norm1(x + self.attn(x, x, x)[0])
-#         x = self.norm2(x + self.ffn(x))
-#         return x
-# model = nn.Sequential(
-#     TransformerBlock(),
-#     TransformerBlock(),
-#     nn.Linear(d_model, 1)
-# )
 
 
 seq_length = 765
@@ -117,29 +115,39 @@ final_size = 1 # we just want one value
 num_heads = 16  
 extra_feature_size = 4
 
-pos_encoding = PositionalEncoding(d_model,seq_length)
+pos_encoding = PositionalEncodingSinuSoidal(d_model,seq_length)
 
 class PathLossModel(nn.Module):
     def __init__(self, 
-                 d_model=160, 
+                 d_model=32, 
                  seq_length=765, 
-                 num_heads=16, 
+                 num_heads=8, 
                  extra_feature_size=4, 
                  final_size=1):
         super().__init__()
         
         self.input_features_projection = nn.Linear(extra_feature_size, d_model)
         self.elevation_projection = nn.Linear(1, d_model)
-        self.pos_encoding = PositionalEncoding(d_model, seq_length)
-        self.multihead_attention = nn.MultiheadAttention(d_model, num_heads, 
-                                                         dropout=0.1, 
-                                                         batch_first=True)
-        
-        self.prediction_layer1 = nn.Linear(d_model, d_model)
+        self.pos_encoding = PositionalEncodingSinuSoidal(d_model, seq_length)
+        # encoder_layer = nn.MultiheadAttention(d_model, num_heads, 
+        #                                                  dropout=0.1, 
+        #                                                  batch_first=True)
+        encoder_layer=  nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=256,   # or bigger
+            dropout=0.1,
+            batch_first=True,
+        )
+        self.multihead_attention = nn.TransformerEncoder(encoder_layer, num_layers=4)
+        self.multihead_attention = encoder_layer
+        self.prediction_layer1 = nn.Linear(d_model*2, d_model)
         self.layer_norm1 = nn.LayerNorm(d_model)
         self.prediction_layer2 = nn.Linear(d_model, d_model*4)
         self.layer_norm2 = nn.LayerNorm(d_model*4)
         self.prediction_layer3 = nn.Linear(d_model*4, final_size)
+        self.conv_pooling = ConvPooling(d_model, hidden_dim=d_model, kernel_size=3)
+        self.attn_pool = nn.MultiheadAttention(d_model, num_heads, batch_first=True)
         
         self.loss_function = nn.SmoothL1Loss()
 
@@ -149,7 +157,7 @@ class PathLossModel(nn.Module):
                 target_labels=None,  # (B,) or (B, 1)
                 padding_mask=None):  # (B, seq_len) if you use it
 
-        # 1. Project
+        # 1. Project the other features
         other_features_embed = self.input_features_projection(input_features) 
         # shape: (B, d_model)
 
@@ -157,21 +165,35 @@ class PathLossModel(nn.Module):
         # shape for elevation_data is (B, seq_len). We want (B, seq_len, 1) for linear
         elevation_embed = self.elevation_projection(elevation_data.unsqueeze(-1))
         # shape: (B, seq_len, d_model)
-        
         pos_embed = self.pos_encoding(elevation_embed)
         # shape: (B, seq_len, d_model)
         
         # 3. Multi-head self-attention
         #  - If we want to respect the mask, pass key_padding_mask=padding_mask
-        attn_out, _ = self.multihead_attention(pos_embed, pos_embed, pos_embed, 
-                                               key_padding_mask=padding_mask)
+        # attn_out, _ = self.multihead_attention(pos_embed, pos_embed, pos_embed, 
+        #                                        key_padding_mask=padding_mask)
+        
+        # attn_out, _ = self.multihead_attention(pos_embed, pos_embed, pos_embed, 
+        #                                         key_padding_mask=padding_mask)
         # shape: (B, seq_len, d_model)
-
+        
+        attn_out = self.multihead_attention(pos_embed) # TransformerEncoderLayer
+  
+  
         # 4. Pool over sequence dimension
-        elevation_vector = torch.mean(attn_out, dim=1)  # shape: (B, d_model)
+        # elevation_vector = torch.mean(attn_out, dim=1)  # shape: (B, d_model)
+        # using a convolutional pooling layer
+        #elevation_vector = self.conv_pooling(attn_out)  
+        
+        # Pooling step in forward()
+        pool_query = other_features_embed.unsqueeze(1)  # (B, 1, d_model)
+        elevation_vector, _ = self.attn_pool(pool_query, attn_out, attn_out)
+        elevation_vector = elevation_vector.squeeze(1)
         
         # 5. Combine elevation vector with the “other” features
-        combined = other_features_embed + elevation_vector  # shape: (B, d_model)
+        #combined = other_features_embed + elevation_vector  # shape: (B, d_model)
+        combined = torch.cat([other_features_embed, elevation_vector], dim=-1)
+        #combined = self.fusion_layer(combined)  # e.g., a linear layer mapping 2*d_model -> d_model
         
         # 6. Pass through your MLP (with ReLU in between)
         hidden1 = F.relu(self.prediction_layer1(combined))
@@ -191,31 +213,34 @@ class PathLossModel(nn.Module):
 
 model = PathLossModel()
 model.to('cuda')
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+#optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4\)
+# scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 
+#                                                        mode='min', 
+#                                                        factor=0.25, 
+#                                                        patience=1, 
+#                                                        verbose=True)
 # Set up a learning rate scheduler that reduces the LR when the loss plateaus.
 # Here, we reduce the LR by a factor of 0.5 if there's no improvement for 5 epochs.
-scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, mode='min', factor=0.5, patience=5, verbose=True
-)
 
 log.info("Training model...")
 
-BATCH_SIZE = 25  # 5 GB for 
+BATCH_SIZE = 10  # 5 GB for 
 model.train()
 loss_value_list = []
 
 # Define the folder containing Parquet files
-INPUT_DIR = "loss_parquet_files"
+INPUT_DIR = "./itm_loss"
 # Get a list of all Parquet files in the folder (sorted for consistency)
 parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
 nfiles = len(parquet_files)
 print(f"Number of parquet_files= {nfiles}")
 
-#parquet_files = parquet_files[:100]  # Limit to 10 files for testing
+parquet_files = parquet_files[:1000]  # Limit to 10 files for testing
 
 dataset = PathLossDataset(parquet_files)
 dataset_len = len(dataset)
-train_ratio = 0.97
+train_ratio = 0.90
 train_len = int(dataset_len * train_ratio)
 val_len = dataset_len - train_len
 
@@ -239,14 +264,25 @@ log.info(f"Training steps per epoch: {train_steps_per_epoch}")
 log.info(f"Validation steps per epoch: {val_steps_per_epoch}")
 
 
-for epoch in range(1):
+for epoch in range(3):
     model.train()
     epoch_loss = 0.0
     num_batches = 0
     step_loss =0
     for i, (input_features, elevation_data, target_labels,padding_mask) in enumerate(train_loader):
-        #print(f"Batch {i}: Extra features shape: {extra_features.shape}, Elevation data shape: {elevation_data.shape}, Path loss shape: {path_loss.shape}")
         step = i + 1
+        #print(f"Batch {i}: Extra features shape: {input_features.shape}, Elevation data shape: {elevation_data.shape}, Path loss shape: {target_labels.shape}")
+        # lets scale elevation data
+        # input_features =(input_features - input_features.mean(dim=1, keepdim=True)) / (input_features.std(dim=1, keepdim=True) + 1e-6)
+        # elevation_data = (elevation_data - elevation_data.mean(dim=1, keepdim=True)) / (elevation_data.std(dim=1, keepdim=True) + 1e-6)
+        # target_labels = (target_labels - target_labels.mean()) / (target_labels.std() + 1e-6)
+        
+        # if i == 0:
+        #     log.info(f"Input Features: {input_features}")
+        #     log.info(f"Elevation Data: {elevation_data[10:20]}")
+        #     log.info(f"Target Labels: {target_labels}")
+        #     log.info(f"Padding Mask: {padding_mask}")
+            
         # Add data validation checks
         # Move to GPU
         input_features = input_features.to('cuda') # (B, 4)
@@ -264,8 +300,9 @@ for epoch in range(1):
           # We are not discarding the loss or ignoring it; rather, we’re enforcing a limit on the size of the update to avoid erratic jumps.
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        #scheduler.step(loss)
         loss_value_list.append((epoch, step, loss.item()))
-        if step % 200 == 0:
+        if step % 100 == 0:
             log.info("[Epoch=%d | Step=%d/%d] loss=%.4f",
                      epoch+1, step, train_steps_per_epoch,loss.item())
         if step % 500 == 0:
@@ -278,14 +315,12 @@ for epoch in range(1):
             np.savez_compressed(
                 loss_log_file, loss=np.array(loss_list, dtype=object))
             loss_value_list = []
-            log.info(f"Training Loss saved at {loss_log_file}")
+            #log.info(f"Training Loss saved at {loss_log_file}")
         if step % 1000 == 0:
             # For ReduceLROnPlateau, call scheduler.step() with the average loss
-            avg_loss = step_loss / 500
+            avg_loss = step_loss / 1000
             step_loss =0
-            scheduler.step(avg_loss)
-            current_lr = optimizer.param_groups[0]['lr']
-            log.info(f"Epoch {epoch+1}/{step}, Loss: {avg_loss:.4f}, LR: {current_lr:.6f}")
+            log.info(f"Epoch {epoch+1}/{step}, Loss: {avg_loss:.4f}")
     
 
     avg_epoch_loss = epoch_loss / num_batches
@@ -316,9 +351,10 @@ for epoch in range(1):
         diff = predictions - targets
         overestimation_count += np.sum(diff > 0.5)
         underestimation_count += np.sum(diff < 0.5)
-        if num_valid_batches > 1000:
+        if num_valid_batches > 3000:
             break # nough for now
     avg_valid_loss = validation_loss / num_valid_batches
+    #scheduler.step(avg_valid_loss)
     
     log.info("---------Epoch %02d | Average Validation : %.4f", epoch+1, avg_valid_loss)
     log.info(f"---------Epoch %02d | Overestimation Count (like False Positive): {overestimation_count}", epoch+1)

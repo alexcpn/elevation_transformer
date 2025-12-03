@@ -4,7 +4,7 @@ import pandas as pd
 import glob
 import os
 import numpy as np
-
+import json as json
 class PathLossDataset(Dataset):
     def __init__(self, parquet_files, max_len=765):
         self.parquet_files = parquet_files
@@ -43,13 +43,18 @@ class PathLossDataset(Dataset):
         df = pd.read_parquet(self.parquet_files[file_index])
         row = df.iloc[local_idx]
         extra_features = torch.tensor([
-            row['dEP_FSRx_m']/1e3,
-            row['center_freq'] / 1e3,
+            row['dEP_FSRx_m'],
+            row['center_freq'] ,
             row['receiver_ht_m'],
             row['accesspoint_ht_m']
         ], dtype=torch.float32)
-         
-        elevation_data = torch.tensor(row['elevation_data'], dtype=torch.float32)
+            # Convert elevation_data from string (if needed)
+        if isinstance(row["elevation_data"], str):
+            elevation_data_list = json.loads(row["elevation_data"])  # Convert from JSON string to list
+        else:
+            elevation_data_list = row["elevation_data"]  # Already a list
+        
+        elevation_data = torch.tensor(elevation_data_list, dtype=torch.float32)
         seq_len = elevation_data.shape[0]
         if seq_len < self.max_len:
             last_value = elevation_data[-1]

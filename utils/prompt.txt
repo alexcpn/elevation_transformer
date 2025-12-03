@@ -1,0 +1,487 @@
+
+
+I am trying to use the Transformer model to model the ITM path loss function
+
+For this I am giving the elevation 5 meters apart from receiver and transmitter using Nation Elevation Data NED
+And also other parameters like receiver and tranmsitter height , center frequency  and distance between receiver and transmitter
+these are given in other parameters
+
+Data is like below
+
+```
+Batch 2: Extra features shape: torch.Size([25, 4]), Elevation data shape: torch.Size([25, 765]), Path loss shape: torch.Size([25])
+Extra features: tensor([[1.3247e+05, 6.1972e+09, 1.9800e+01, 1.1000e+02]])
+Elevation data: tensor([[971.7514, 966.7197, 921.8181, 922.5922, 902.2776, 896.6091, 902.8640,
+         878.4184, 925.5356, 930.1761, 911.3127, 907.3679, 913.3461, 904.3963,
+         919.7083, 912.5177, 900.4665, 856.4274, 776.5128, 786.7920, 765.8703,
+         668.5434, 716.6068, 803.0111, 816.9056, 814.5295, 727.9070, 645.9540,
+         586.9606, 608.0467, 630.8818, 735.3602, 767.5924, 776.0527, 795.9663,
+         803.4875, 811.1933, 821.8063, 819.0222, 816.7208, 803.4805, 793.1992,
+         786.6118, 780.9504, 759.6289, 765.2091, 760.0316, 709.9828, 667.5410,
+         727.1855, 750.7281, 758.7427, 749.0192, 756.3028, 767.7691, 796.6445,
+         815.8206, 796.1119, 797.3508, 786.4662, 778.4300, 780.6548, 773.5533,
+         773.1862, 783.2479, 742.2842, 748.1468, 745.8381, 743.4634, 710.7844,
+         676.1982, 692.9802, 728.9631, 717.5012, 719.7802, 730.5256, 730.2177,
+         732.0776, 740.8824, 760.1999, 769.5323, 712.7040, 747.0775, 742.8512,
+         672.1113, 685.1672, 711.2324, 727.7318, 769.0589, 776.1702, 746.5271,
+         737.9761, 717.2822, 747.5587, 730.8532, 727.9503, 714.8759, 721.5303,
+         715.9386, 694.5042, 703.2717, 702.6683, 695.7310, 678.3393, 665.7763,
+         681.0245, 692.1167, 656.9249, 646.8975, 602.9160, 596.3551, 587.8787,
+         598.4081, 635.9686, 619.0054, 596.7976, 589.0901, 599.5493, 618.9772,
+         628.5686, 612.6895, 606.3475, 599.5284, 572.7939, 566.9422, 571.2117,
+         569.9272, 547.8616, 551.6704, 561.1824, 583.1318, 603.3981, 534.0129,
+         464.7202, 402.9731, 352.4311, 380.7499, 440.3126, 479.7043, 505.7668,
+         478.8992, 506.7221, 482.2681, 431.8900, 471.8362, 498.4417, 474.8715,
+         402.0081, 385.3343, 337.8135, 256.3462, 200.2383, 219.2766, 293.6480,
+         349.9222, 416.2202, 498.5316, 475.5095, 417.2775, 510.3068, 525.2638,
+         516.7174, 501.9026, 515.5858, 566.8870, 553.5654, 465.7267, 339.1531,
+         248.5372, 218.9329, 221.4562, 255.5026, 286.1453, 378.5000, 454.9964,
+         448.6624, 444.6408, 426.8676, 421.1450, 431.5708, 431.8690, 433.3121,
+         443.0560, 450.2199, 472.2409, 467.4939, 464.2396, 454.2953, 460.1972,
+         451.7144, 450.9227, 456.3986, 447.6447, 436.9089, 415.7308, 394.2062,
+         389.0624, 416.1519, 447.2227, 440.9103, 465.2578, 451.4433, 463.3141,
+         493.6648, 477.3908, 399.6386, 307.2251, 220.3521, 268.4720, 293.1382,
+         301.9723, 329.0819, 373.0044, 389.1716, 398.5982, 402.7152, 403.0882,
+         390.4921, 379.3233, 360.9696, 349.9161, 360.4005, 365.6344, 375.8188,
+         398.4536, 365.5953, 333.3636, 311.1471, 295.3615, 308.8870, 330.5883,
+         364.6292, 370.1491, 377.4979, 390.7340, 388.1449, 388.8622, 394.0758,
+         376.2542, 372.9019, 356.0579, 362.3905, 356.0191, 351.9307, 347.1471,
+         334.5726, 329.3887, 331.4541, 352.4146, 399.2847, 386.2638, 318.6222,
+         278.1115, 273.6940, 263.7469, 262.3204, 190.4798, 172.1000, 199.4545,
+         175.7175, 170.3629, 168.4673, 171.6952, 180.8200, 182.4321, 178.9852,
+         185.1012, 204.4629, 195.8068, 152.7427, 139.2239, 144.3549, 150.6132,
+         159.0269, 159.5684, 154.5689, 157.1693, 138.6043, 148.6665, 156.8843,
+         150.3801, 136.5333, 120.5201, 118.7427, 123.1397, 133.1518, 144.5213,
+         146.6859, 157.0719, 190.9536, 218.7991, 225.5890, 209.3008, 187.8536,
+         195.3947, 172.4870, 175.4933, 146.5170, 149.0512, 143.2175, 133.8926,
+         114.0576, 109.2077, 105.5622, 100.6456,  98.3369,  94.4349,  87.0814,
+          82.9713,  81.5978,  76.6279,  64.1809,  50.8959,  50.5241,  63.8867,
+          63.2298,  64.7592,  56.3676,  64.5216,  67.7843,  58.8116,  61.7940,
+          55.0841,  49.5684,  51.7485,  53.8836,  51.1054,  56.4544,  50.5443,
+          47.7655,  44.7483,  43.9819,  43.4482,  42.8809,  45.1353,  48.2529,
+          44.6040,  41.3319,  40.6021,  39.8537,  39.2011,  38.2257,  38.5899,
+          37.9464,  36.9604,  40.0225,  41.3822,  40.7733,  41.4612,  43.4595,
+          47.4940,  49.8652,  52.7740,  55.3331,  44.2332,  42.1767,  43.0564,
+          36.4134,  39.8397,  41.3097,  43.7682,  37.0400,  36.7994,  37.0093,
+          37.0562,  37.0714,  36.6052,  36.5744,  36.3233,  34.8635,  35.1579,
+          35.8778,  33.7707,  34.8926,  31.3841,  30.0341,  28.7775,  29.4768,
+          29.8398,  29.4662,  29.4686,  29.5035,  29.0626,  28.8755,  31.1149,
+          33.9090,  27.2660,  28.8154,  38.0475,  26.5268,  32.6658,  32.9886,
+          28.0776,  28.4001,  32.3702,  33.5145,  29.1683,  26.4184,  24.8693,
+          24.8488,  24.9679,  31.5410,  30.4042,  32.4022,  28.9377,  23.0686,
+          24.3186,  28.2962,  28.1973,  27.9493,  27.7505,  27.7887,  27.8278,
+          27.6150,  27.6837,  28.1009,  27.7362,  27.1029,  25.3663,  24.8583,
+          24.3933,  23.5788,  23.1413,  23.1191,  22.9415,  22.7647,  23.0146,
+          22.9907,  22.4870,  22.2700,  22.1595,  22.1321,  22.0200,  21.9515,
+          21.0770,  21.5471,  22.0835,  21.8912,  21.8900,  21.8900,  21.8906,
+          21.6688,  21.5460,  21.9708,  22.0748,  21.8738,  21.2978,  21.9062,
+          22.0568,  22.0824,  21.8560,  21.7982,  22.2221,  22.2533,  22.5671,
+          22.1553,  22.0682,  22.1184,  22.2875,  22.2379,  22.4064,  22.3016,
+          22.3370,  22.3129,  22.0301,  22.4098,  20.4305,  18.6995,  19.1180,
+          19.5231,  19.6693,  19.5769,  19.1138,  19.3516,  13.6215,  13.4129,
+          13.5050,  16.6663,  23.4536,  22.8013,  22.9254,  22.6877,  22.6915,
+          23.0007,  22.7170,  22.2653,  22.4340,  23.2100,  22.8730,  22.8210,
+          22.6085,  22.3128,  22.4059,  22.4503,  22.4751,  22.6637,  22.3753,
+          22.2746,  22.1693,  22.1412,  22.1541,  22.2127,  23.3915,  22.2708,
+          22.4519,  22.5500,  22.7079,  22.5577,  22.1352,  21.9782,  22.0336,
+          22.1128,  22.1907,  22.5124,  22.8023,  22.6609,  22.6164,  22.3700,
+          22.1320,  22.4994,  23.0710,  22.7788,  23.0258,  22.4293,  22.3943,
+          22.4816,  22.6706,  22.6500,  22.7524,  22.6374,  22.8959,  23.0512,
+          22.6347,  22.4648,  22.5417,  22.5013,  22.5052,  22.3963,  22.3911,
+          22.3993,  22.3627,  22.2064,  22.2621,  22.3388,  22.2947,  22.0938,
+          22.0128,  22.0103,  21.9800,  22.0000,  22.3300,  22.4454,  22.0900,
+          22.0900,  22.0961,  22.3300,  22.4547,  22.3533,  22.0706,  21.9096,
+          22.5376,  21.6700,  21.6700,  21.6700,  21.6740,  21.8138,  21.7244,
+          21.5037,  21.5816,  21.3900,  21.5270,  21.1695,  21.5701,  21.7934,
+          21.2859,  21.9245,  21.4586,  21.1525,  20.8907,  21.7581,  21.8214,
+          21.1036,  20.7534,  20.8048,  20.9275,  20.5677,  20.7636,  20.4294,
+          20.3875,  20.0706,  19.9900,  19.9900,  19.9763,  19.6900,  19.6900,
+          19.8388,  19.9429,  19.4306,  19.2965,  19.1799,  19.2522,  19.2184,
+          18.9247,  18.7018,  18.6484,  18.8187,  18.6830,  18.6642,  18.6551,
+          18.6662,  18.8511,  18.6800,  18.8049,  18.5200,  18.6368,  18.4263,
+          18.3900,  18.4172,  18.7751,  19.0449,  18.5018,  18.6264,  18.8412,
+          19.2620,  19.5283,  19.2247,  18.9173,  18.8003,  18.8400,  18.9746,
+          19.2507,  19.7654,  19.5708,  19.7304,  19.7337,  19.6949,  19.6722,
+          19.7800,  19.8301,  19.9468,  20.0100,  20.0450,  20.0775,  20.0837,
+          20.2825,  20.1904,  20.1900,  20.3618,  20.1569,  20.0094,  20.1117,
+          20.3323,  20.1172,  20.1844,  20.2400,  20.2717,  20.4702,  20.4356,
+          20.6385,  20.9894,  21.0424,  21.0554,  21.0698,  21.2532,  21.4076,
+          21.4256,  21.0697,  21.6273,  21.9011,  21.8048,  21.8174,  21.9878,
+          22.3297,  22.3712,  22.4142,  23.0148,  23.0675,  23.3366,  23.1521,
+          23.2943,  23.7475,  23.9248,  23.7953,  24.0014,  24.1918, 448.6624,
+         440.9489, 430.2237, 433.1429, 424.6937, 421.4507, 426.6187, 457.4059,
+         483.4827, 469.8013, 454.7911, 476.5232, 501.0729, 500.8474, 493.1862,
+         481.1803, 471.1690, 487.4442, 484.3928, 463.5857, 470.6604, 510.0217,
+         508.4078, 507.9220, 490.7473, 493.8257, 506.6545, 510.2102, 519.3344,
+         524.2212, 527.3615, 533.2701, 538.3406, 537.9152, 539.7861, 544.3794,
+         553.7001, 553.7067, 544.7006, 546.5618, 555.6381, 559.9868, 561.6141,
+         552.0869, 511.8062, 506.3144, 509.6459, 512.6596, 535.8057, 550.1025,
+         556.9548, 531.5975, 544.6248, 520.3131, 488.0887, 480.4000, 477.8767,
+         520.1855, 492.1660, 454.9964,  24.1918,  25.1287,  24.4677,  24.2872,
+          25.0074,  18.6759,  26.6408,  24.9457,  24.5818,  24.3717,  24.4144,
+          24.2019,  23.9079,  23.4414,  23.6726,  23.6726,  23.6726,  23.6726,
+          23.6726,  23.6726]])
+```
+
+My network is like this
+
+```
+
+pos_encoding = PositionalEncodingSinuSoidal(d_model,seq_length)
+
+class PathLossModel(nn.Module):
+    def __init__(self, 
+                 d_model=160, 
+                 seq_length=765, 
+                 num_heads=16, 
+                 extra_feature_size=4, 
+                 final_size=1):
+        super().__init__()
+        
+        self.input_features_projection = nn.Linear(extra_feature_size, d_model)
+        self.elevation_projection = nn.Linear(1, d_model)
+        self.pos_encoding = PositionalEncodingSinuSoidal(d_model, seq_length)
+        encoder_layer = nn.MultiheadAttention(d_model, num_heads, 
+                                                         dropout=0.1, 
+                                                         batch_first=True)
+        # encoder_layer=  nn.TransformerEncoderLayer(
+        #     d_model=d_model,
+        #     nhead=num_heads,
+        #     dim_feedforward=256,   # or bigger
+        #     dropout=0.1,
+        #     batch_first=True,
+        # )
+        #self.multihead_attention = nn.TransformerEncoder(encoder_layer, num_layers=4)
+        self.multihead_attention = encoder_layer
+        self.prediction_layer1 = nn.Linear(d_model*2, d_model)
+        self.layer_norm1 = nn.LayerNorm(d_model)
+        self.prediction_layer2 = nn.Linear(d_model, d_model*4)
+        self.layer_norm2 = nn.LayerNorm(d_model*4)
+        self.prediction_layer3 = nn.Linear(d_model*4, final_size)
+        self.conv_pooling = ConvPooling(d_model, hidden_dim=160, kernel_size=3)
+
+        
+        self.loss_function = nn.SmoothL1Loss()
+
+    def forward(self, 
+                input_features,      # (B, 4)
+                elevation_data,      # (B, seq_len)
+                target_labels=None,  # (B,) or (B, 1)
+                padding_mask=None):  # (B, seq_len) if you use it
+
+        # 1. Project
+        other_features_embed = self.input_features_projection(input_features) 
+        # shape: (B, d_model)
+
+        # 2. Elevation embedding + positional encoding
+        # shape for elevation_data is (B, seq_len). We want (B, seq_len, 1) for linear
+        elevation_embed = self.elevation_projection(elevation_data.unsqueeze(-1))
+        # shape: (B, seq_len, d_model)
+        pos_embed = self.pos_encoding(elevation_embed)
+        # shape: (B, seq_len, d_model)
+        
+        # 3. Multi-head self-attention
+        #  - If we want to respect the mask, pass key_padding_mask=padding_mask
+        # attn_out, _ = self.multihead_attention(pos_embed, pos_embed, pos_embed, 
+        #                                        key_padding_mask=padding_mask)
+        
+        attn_out, _ = self.multihead_attention(pos_embed, pos_embed, pos_embed, 
+                                                key_padding_mask=padding_mask)
+        # shape: (B, seq_len, d_model)
+        
+        #attn_out = self.multihead_attention(pos_embed) # TransformerEncoderLayer
+  
+        # 4. Pool over sequence dimension
+        # elevation_vector = torch.mean(attn_out, dim=1)  # shape: (B, d_model)
+        # using a convolutional pooling layer
+        elevation_vector = self.conv_pooling(attn_out)  
+        
+        # 5. Combine elevation vector with the “other” features
+        #combined = other_features_embed + elevation_vector  # shape: (B, d_model)
+        combined = torch.cat([other_features_embed, elevation_vector], dim=-1)
+    #combined = self.fusion_layer(combined)  # e.g., a linear layer mapping 2*d_model -> d_model
+
+        
+        # 6. Pass through your MLP (with ReLU in between)
+        hidden1 = F.relu(self.prediction_layer1(combined))
+        hidden1 = self.layer_norm1(hidden1)
+        
+        hidden2 = F.relu(self.prediction_layer2(hidden1))
+        hidden2 = self.layer_norm2(hidden2)
+        
+        logits = self.prediction_layer3(hidden2).squeeze(-1)  # shape: (B,)
+        
+        # If target_labels is given (training/validation), compute loss
+        loss = None
+        if target_labels is not None:
+            loss = self.loss_function(logits, target_labels)
+
+        return logits, loss
+```
+The loss decreases steeply at first and then plateaus, whatever I do . Using Transformer Encoding blocks, multiple heads and projections
+
+alex@pop-os:/ssd/pathlossTransformer$ /usr/bin/python3 /ssd/pathlossTransformer/patloss_attention2.py
+07-Mar-25 15:00:03 - Created path loss file ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:00:04 - Training model...
+Number of parquet_files= 16196
+07-Mar-25 15:00:06 - Training steps per epoch: 18903
+07-Mar-25 15:00:06 - Validation steps per epoch: 2101
+07-Mar-25 15:00:11 - [Epoch=1 | Step=100/18903] loss=220.5408
+07-Mar-25 15:00:16 - [Epoch=1 | Step=200/18903] loss=188.5826
+07-Mar-25 15:00:20 - [Epoch=1 | Step=300/18903] loss=188.7461
+07-Mar-25 15:00:24 - [Epoch=1 | Step=400/18903] loss=182.5033
+07-Mar-25 15:00:28 - [Epoch=1 | Step=500/18903] loss=165.7376
+07-Mar-25 15:00:28 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:00:32 - [Epoch=1 | Step=600/18903] loss=179.7150
+07-Mar-25 15:00:36 - [Epoch=1 | Step=700/18903] loss=144.4042
+07-Mar-25 15:00:40 - [Epoch=1 | Step=800/18903] loss=149.3508
+07-Mar-25 15:00:44 - [Epoch=1 | Step=900/18903] loss=130.7766
+07-Mar-25 15:00:48 - [Epoch=1 | Step=1000/18903] loss=134.0395
+07-Mar-25 15:00:48 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:00:48 - Epoch 1/1000, Loss: 338.6055
+07-Mar-25 15:00:53 - [Epoch=1 | Step=1100/18903] loss=124.9036
+07-Mar-25 15:00:57 - [Epoch=1 | Step=1200/18903] loss=112.9619
+07-Mar-25 15:01:01 - [Epoch=1 | Step=1300/18903] loss=104.0902
+07-Mar-25 15:01:05 - [Epoch=1 | Step=1400/18903] loss=75.6475
+07-Mar-25 15:01:09 - [Epoch=1 | Step=1500/18903] loss=74.1493
+07-Mar-25 15:01:09 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:01:14 - [Epoch=1 | Step=1600/18903] loss=71.6475
+07-Mar-25 15:01:18 - [Epoch=1 | Step=1700/18903] loss=53.0652
+07-Mar-25 15:01:22 - [Epoch=1 | Step=1800/18903] loss=35.2846
+07-Mar-25 15:01:27 - [Epoch=1 | Step=1900/18903] loss=40.8264
+07-Mar-25 15:01:31 - [Epoch=1 | Step=2000/18903] loss=26.7653
+07-Mar-25 15:01:31 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:01:31 - Epoch 1/2000, Loss: 147.4021
+07-Mar-25 15:01:35 - [Epoch=1 | Step=2100/18903] loss=22.2699
+07-Mar-25 15:01:40 - [Epoch=1 | Step=2200/18903] loss=20.2325
+07-Mar-25 15:01:44 - [Epoch=1 | Step=2300/18903] loss=14.5390
+07-Mar-25 15:01:48 - [Epoch=1 | Step=2400/18903] loss=22.9539
+07-Mar-25 15:01:53 - [Epoch=1 | Step=2500/18903] loss=16.7435
+07-Mar-25 15:01:53 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:01:57 - [Epoch=1 | Step=2600/18903] loss=15.5286
+07-Mar-25 15:02:01 - [Epoch=1 | Step=2700/18903] loss=21.7836
+07-Mar-25 15:02:06 - [Epoch=1 | Step=2800/18903] loss=15.8181
+07-Mar-25 15:02:10 - [Epoch=1 | Step=2900/18903] loss=28.9831
+07-Mar-25 15:02:15 - [Epoch=1 | Step=3000/18903] loss=16.8500
+07-Mar-25 15:02:15 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:02:15 - Epoch 1/3000, Loss: 44.3989
+07-Mar-25 15:02:19 - [Epoch=1 | Step=3100/18903] loss=22.9573
+07-Mar-25 15:02:23 - [Epoch=1 | Step=3200/18903] loss=29.5221
+07-Mar-25 15:02:28 - [Epoch=1 | Step=3300/18903] loss=12.9918
+07-Mar-25 15:02:32 - [Epoch=1 | Step=3400/18903] loss=15.8775
+07-Mar-25 15:02:37 - [Epoch=1 | Step=3500/18903] loss=18.7487
+07-Mar-25 15:02:37 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:02:41 - [Epoch=1 | Step=3600/18903] loss=16.5824
+07-Mar-25 15:02:46 - [Epoch=1 | Step=3700/18903] loss=33.6431
+07-Mar-25 15:02:50 - [Epoch=1 | Step=3800/18903] loss=25.6747
+07-Mar-25 15:02:55 - [Epoch=1 | Step=3900/18903] loss=24.7258
+07-Mar-25 15:02:59 - [Epoch=1 | Step=4000/18903] loss=19.2567
+07-Mar-25 15:02:59 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:02:59 - Epoch 1/4000, Loss: 43.3005
+07-Mar-25 15:03:04 - [Epoch=1 | Step=4100/18903] loss=16.3496
+07-Mar-25 15:03:08 - [Epoch=1 | Step=4200/18903] loss=20.1133
+07-Mar-25 15:03:13 - [Epoch=1 | Step=4300/18903] loss=19.2160
+07-Mar-25 15:03:18 - [Epoch=1 | Step=4400/18903] loss=13.7403
+07-Mar-25 15:03:22 - [Epoch=1 | Step=4500/18903] loss=15.6185
+07-Mar-25 15:03:22 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:03:27 - [Epoch=1 | Step=4600/18903] loss=14.7089
+07-Mar-25 15:03:31 - [Epoch=1 | Step=4700/18903] loss=31.1674
+07-Mar-25 15:03:36 - [Epoch=1 | Step=4800/18903] loss=19.8709
+07-Mar-25 15:03:40 - [Epoch=1 | Step=4900/18903] loss=21.4215
+07-Mar-25 15:03:45 - [Epoch=1 | Step=5000/18903] loss=21.1507
+07-Mar-25 15:03:45 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:03:45 - Epoch 1/5000, Loss: 43.8661
+07-Mar-25 15:03:50 - [Epoch=1 | Step=5100/18903] loss=24.6927
+07-Mar-25 15:03:54 - [Epoch=1 | Step=5200/18903] loss=16.3922
+07-Mar-25 15:03:59 - [Epoch=1 | Step=5300/18903] loss=24.7126
+07-Mar-25 15:04:03 - [Epoch=1 | Step=5400/18903] loss=24.2774
+07-Mar-25 15:04:08 - [Epoch=1 | Step=5500/18903] loss=13.0600
+07-Mar-25 15:04:08 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:04:12 - [Epoch=1 | Step=5600/18903] loss=16.8763
+07-Mar-25 15:04:17 - [Epoch=1 | Step=5700/18903] loss=18.7194
+07-Mar-25 15:04:22 - [Epoch=1 | Step=5800/18903] loss=26.2408
+07-Mar-25 15:04:26 - [Epoch=1 | Step=5900/18903] loss=18.3108
+07-Mar-25 15:04:31 - [Epoch=1 | Step=6000/18903] loss=21.4924
+07-Mar-25 15:04:31 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:04:31 - Epoch 1/6000, Loss: 43.5176
+07-Mar-25 15:04:36 - [Epoch=1 | Step=6100/18903] loss=23.4500
+07-Mar-25 15:04:40 - [Epoch=1 | Step=6200/18903] loss=18.0464
+07-Mar-25 15:04:45 - [Epoch=1 | Step=6300/18903] loss=24.9346
+07-Mar-25 15:04:50 - [Epoch=1 | Step=6400/18903] loss=17.0356
+07-Mar-25 15:04:54 - [Epoch=1 | Step=6500/18903] loss=18.8969
+07-Mar-25 15:04:54 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:04:59 - [Epoch=1 | Step=6600/18903] loss=22.9970
+07-Mar-25 15:05:03 - [Epoch=1 | Step=6700/18903] loss=10.9708
+07-Mar-25 15:05:08 - [Epoch=1 | Step=6800/18903] loss=20.1208
+07-Mar-25 15:05:13 - [Epoch=1 | Step=6900/18903] loss=15.3950
+07-Mar-25 15:05:17 - [Epoch=1 | Step=7000/18903] loss=31.5119
+07-Mar-25 15:05:17 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:05:17 - Epoch 1/7000, Loss: 43.4777
+07-Mar-25 15:05:22 - [Epoch=1 | Step=7100/18903] loss=19.8094
+07-Mar-25 15:05:27 - [Epoch=1 | Step=7200/18903] loss=12.0891
+07-Mar-25 15:05:31 - [Epoch=1 | Step=7300/18903] loss=11.8527
+07-Mar-25 15:05:36 - [Epoch=1 | Step=7400/18903] loss=13.1944
+07-Mar-25 15:05:41 - [Epoch=1 | Step=7500/18903] loss=23.7462
+07-Mar-25 15:05:41 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:05:45 - [Epoch=1 | Step=7600/18903] loss=22.7600
+07-Mar-25 15:05:50 - [Epoch=1 | Step=7700/18903] loss=18.8544
+07-Mar-25 15:05:55 - [Epoch=1 | Step=7800/18903] loss=26.5000
+07-Mar-25 15:05:59 - [Epoch=1 | Step=7900/18903] loss=28.7278
+07-Mar-25 15:06:04 - [Epoch=1 | Step=8000/18903] loss=12.8992
+07-Mar-25 15:06:04 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:06:04 - Epoch 1/8000, Loss: 44.3914
+07-Mar-25 15:06:09 - [Epoch=1 | Step=8100/18903] loss=23.3704
+07-Mar-25 15:06:13 - [Epoch=1 | Step=8200/18903] loss=21.8585
+07-Mar-25 15:06:18 - [Epoch=1 | Step=8300/18903] loss=26.6475
+07-Mar-25 15:06:22 - [Epoch=1 | Step=8400/18903] loss=18.6329
+07-Mar-25 15:06:27 - [Epoch=1 | Step=8500/18903] loss=20.6419
+07-Mar-25 15:06:27 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:06:32 - [Epoch=1 | Step=8600/18903] loss=27.1823
+07-Mar-25 15:06:36 - [Epoch=1 | Step=8700/18903] loss=23.1824
+07-Mar-25 15:06:41 - [Epoch=1 | Step=8800/18903] loss=26.0802
+07-Mar-25 15:06:46 - [Epoch=1 | Step=8900/18903] loss=24.4565
+07-Mar-25 15:06:50 - [Epoch=1 | Step=9000/18903] loss=28.8171
+07-Mar-25 15:06:50 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:06:50 - Epoch 1/9000, Loss: 44.6881
+07-Mar-25 15:06:55 - [Epoch=1 | Step=9100/18903] loss=18.3915
+07-Mar-25 15:07:00 - [Epoch=1 | Step=9200/18903] loss=16.2118
+07-Mar-25 15:07:04 - [Epoch=1 | Step=9300/18903] loss=30.3467
+07-Mar-25 15:07:09 - [Epoch=1 | Step=9400/18903] loss=29.4989
+07-Mar-25 15:07:14 - [Epoch=1 | Step=9500/18903] loss=22.1596
+07-Mar-25 15:07:14 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:07:18 - [Epoch=1 | Step=9600/18903] loss=12.4383
+07-Mar-25 15:07:23 - [Epoch=1 | Step=9700/18903] loss=23.6009
+07-Mar-25 15:07:28 - [Epoch=1 | Step=9800/18903] loss=33.3775
+07-Mar-25 15:07:32 - [Epoch=1 | Step=9900/18903] loss=24.9527
+07-Mar-25 15:07:37 - [Epoch=1 | Step=10000/18903] loss=21.8411
+07-Mar-25 15:07:37 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:07:37 - Epoch 1/10000, Loss: 43.9312
+07-Mar-25 15:07:42 - [Epoch=1 | Step=10100/18903] loss=16.4397
+07-Mar-25 15:07:46 - [Epoch=1 | Step=10200/18903] loss=30.2471
+07-Mar-25 15:07:51 - [Epoch=1 | Step=10300/18903] loss=19.1557
+07-Mar-25 15:07:56 - [Epoch=1 | Step=10400/18903] loss=25.7421
+07-Mar-25 15:08:01 - [Epoch=1 | Step=10500/18903] loss=14.8160
+07-Mar-25 15:08:01 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:08:05 - [Epoch=1 | Step=10600/18903] loss=25.9911
+07-Mar-25 15:08:10 - [Epoch=1 | Step=10700/18903] loss=22.3382
+07-Mar-25 15:08:15 - [Epoch=1 | Step=10800/18903] loss=24.3722
+07-Mar-25 15:08:19 - [Epoch=1 | Step=10900/18903] loss=25.2683
+07-Mar-25 15:08:24 - [Epoch=1 | Step=11000/18903] loss=22.7550
+07-Mar-25 15:08:24 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:08:24 - Epoch 1/11000, Loss: 43.8569
+07-Mar-25 15:08:29 - [Epoch=1 | Step=11100/18903] loss=25.7441
+07-Mar-25 15:08:33 - [Epoch=1 | Step=11200/18903] loss=20.5467
+07-Mar-25 15:08:38 - [Epoch=1 | Step=11300/18903] loss=16.9355
+07-Mar-25 15:08:43 - [Epoch=1 | Step=11400/18903] loss=15.6445
+07-Mar-25 15:08:47 - [Epoch=1 | Step=11500/18903] loss=26.3902
+07-Mar-25 15:08:48 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:08:52 - [Epoch=1 | Step=11600/18903] loss=24.3115
+07-Mar-25 15:08:57 - [Epoch=1 | Step=11700/18903] loss=21.1768
+07-Mar-25 15:09:02 - [Epoch=1 | Step=11800/18903] loss=16.3308
+07-Mar-25 15:09:06 - [Epoch=1 | Step=11900/18903] loss=17.8210
+07-Mar-25 15:09:11 - [Epoch=1 | Step=12000/18903] loss=19.0767
+07-Mar-25 15:09:11 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:09:11 - Epoch 1/12000, Loss: 44.1030
+07-Mar-25 15:09:16 - [Epoch=1 | Step=12100/18903] loss=34.0280
+07-Mar-25 15:09:20 - [Epoch=1 | Step=12200/18903] loss=27.0469
+07-Mar-25 15:09:25 - [Epoch=1 | Step=12300/18903] loss=27.4913
+07-Mar-25 15:09:30 - [Epoch=1 | Step=12400/18903] loss=28.2617
+07-Mar-25 15:09:34 - [Epoch=1 | Step=12500/18903] loss=14.0961
+07-Mar-25 15:09:34 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:09:39 - [Epoch=1 | Step=12600/18903] loss=34.0230
+07-Mar-25 15:09:44 - [Epoch=1 | Step=12700/18903] loss=24.2002
+07-Mar-25 15:09:48 - [Epoch=1 | Step=12800/18903] loss=23.6013
+07-Mar-25 15:09:53 - [Epoch=1 | Step=12900/18903] loss=24.2967
+07-Mar-25 15:09:57 - [Epoch=1 | Step=13000/18903] loss=24.7809
+07-Mar-25 15:09:57 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:09:57 - Epoch 1/13000, Loss: 43.9975
+07-Mar-25 15:10:02 - [Epoch=1 | Step=13100/18903] loss=20.1676
+07-Mar-25 15:10:07 - [Epoch=1 | Step=13200/18903] loss=36.5757
+07-Mar-25 15:10:11 - [Epoch=1 | Step=13300/18903] loss=10.5951
+07-Mar-25 15:10:16 - [Epoch=1 | Step=13400/18903] loss=18.7637
+07-Mar-25 15:10:21 - [Epoch=1 | Step=13500/18903] loss=35.0294
+07-Mar-25 15:10:21 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:10:25 - [Epoch=1 | Step=13600/18903] loss=17.4091
+07-Mar-25 15:10:30 - [Epoch=1 | Step=13700/18903] loss=26.5330
+07-Mar-25 15:10:35 - [Epoch=1 | Step=13800/18903] loss=12.2037
+07-Mar-25 15:10:39 - [Epoch=1 | Step=13900/18903] loss=32.4117
+07-Mar-25 15:10:44 - [Epoch=1 | Step=14000/18903] loss=16.8859
+07-Mar-25 15:10:44 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:10:44 - Epoch 1/14000, Loss: 43.9482
+07-Mar-25 15:10:49 - [Epoch=1 | Step=14100/18903] loss=17.7191
+07-Mar-25 15:10:53 - [Epoch=1 | Step=14200/18903] loss=25.7125
+07-Mar-25 15:10:58 - [Epoch=1 | Step=14300/18903] loss=19.8633
+07-Mar-25 15:11:03 - [Epoch=1 | Step=14400/18903] loss=24.3594
+07-Mar-25 15:11:07 - [Epoch=1 | Step=14500/18903] loss=21.1809
+07-Mar-25 15:11:07 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:11:12 - [Epoch=1 | Step=14600/18903] loss=18.4031
+07-Mar-25 15:11:17 - [Epoch=1 | Step=14700/18903] loss=25.1606
+07-Mar-25 15:11:21 - [Epoch=1 | Step=14800/18903] loss=27.9973
+07-Mar-25 15:11:26 - [Epoch=1 | Step=14900/18903] loss=22.3547
+07-Mar-25 15:11:30 - [Epoch=1 | Step=15000/18903] loss=20.3801
+07-Mar-25 15:11:31 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:11:31 - Epoch 1/15000, Loss: 43.9340
+07-Mar-25 15:11:35 - [Epoch=1 | Step=15100/18903] loss=24.0708
+07-Mar-25 15:11:40 - [Epoch=1 | Step=15200/18903] loss=16.6812
+07-Mar-25 15:11:45 - [Epoch=1 | Step=15300/18903] loss=15.1110
+07-Mar-25 15:11:49 - [Epoch=1 | Step=15400/18903] loss=15.5432
+07-Mar-25 15:11:54 - [Epoch=1 | Step=15500/18903] loss=22.3538
+07-Mar-25 15:11:54 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:11:59 - [Epoch=1 | Step=15600/18903] loss=12.7798
+07-Mar-25 15:12:03 - [Epoch=1 | Step=15700/18903] loss=27.7126
+07-Mar-25 15:12:08 - [Epoch=1 | Step=15800/18903] loss=25.8190
+07-Mar-25 15:12:13 - [Epoch=1 | Step=15900/18903] loss=19.0542
+07-Mar-25 15:12:17 - [Epoch=1 | Step=16000/18903] loss=23.2969
+07-Mar-25 15:12:17 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:12:17 - Epoch 1/16000, Loss: 44.2547
+07-Mar-25 15:12:22 - [Epoch=1 | Step=16100/18903] loss=12.0153
+07-Mar-25 15:12:27 - [Epoch=1 | Step=16200/18903] loss=14.8867
+07-Mar-25 15:12:31 - [Epoch=1 | Step=16300/18903] loss=25.1943
+07-Mar-25 15:12:36 - [Epoch=1 | Step=16400/18903] loss=26.1889
+07-Mar-25 15:12:41 - [Epoch=1 | Step=16500/18903] loss=16.7003
+07-Mar-25 15:12:41 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:12:45 - [Epoch=1 | Step=16600/18903] loss=23.9958
+07-Mar-25 15:12:50 - [Epoch=1 | Step=16700/18903] loss=13.5205
+07-Mar-25 15:12:55 - [Epoch=1 | Step=16800/18903] loss=16.1078
+07-Mar-25 15:12:59 - [Epoch=1 | Step=16900/18903] loss=17.6170
+07-Mar-25 15:13:04 - [Epoch=1 | Step=17000/18903] loss=16.6414
+07-Mar-25 15:13:04 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:13:04 - Epoch 1/17000, Loss: 44.3290
+07-Mar-25 15:13:09 - [Epoch=1 | Step=17100/18903] loss=26.2067
+07-Mar-25 15:13:13 - [Epoch=1 | Step=17200/18903] loss=28.6936
+07-Mar-25 15:13:18 - [Epoch=1 | Step=17300/18903] loss=19.3119
+07-Mar-25 15:13:23 - [Epoch=1 | Step=17400/18903] loss=15.9691
+07-Mar-25 15:13:27 - [Epoch=1 | Step=17500/18903] loss=13.7124
+07-Mar-25 15:13:27 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:13:32 - [Epoch=1 | Step=17600/18903] loss=26.7709
+07-Mar-25 15:13:37 - [Epoch=1 | Step=17700/18903] loss=15.6582
+07-Mar-25 15:13:42 - [Epoch=1 | Step=17800/18903] loss=24.0603
+07-Mar-25 15:13:46 - [Epoch=1 | Step=17900/18903] loss=17.9821
+07-Mar-25 15:13:51 - [Epoch=1 | Step=18000/18903] loss=29.3641
+07-Mar-25 15:13:51 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:13:51 - Epoch 1/18000, Loss: 44.1034
+07-Mar-25 15:13:56 - [Epoch=1 | Step=18100/18903] loss=28.3585
+07-Mar-25 15:14:01 - [Epoch=1 | Step=18200/18903] loss=21.4258
+07-Mar-25 15:14:05 - [Epoch=1 | Step=18300/18903] loss=26.3351
+07-Mar-25 15:14:10 - [Epoch=1 | Step=18400/18903] loss=13.8101
+07-Mar-25 15:14:15 - [Epoch=1 | Step=18500/18903] loss=21.3256
+07-Mar-25 15:14:15 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:14:20 - [Epoch=1 | Step=18600/18903] loss=17.9772
+07-Mar-25 15:14:25 - [Epoch=1 | Step=18700/18903] loss=16.6462
+07-Mar-25 15:14:29 - [Epoch=1 | Step=18800/18903] loss=23.1856
+07-Mar-25 15:14:34 - [Epoch=1 | Step=18900/18903] loss=18.1751
+07-Mar-25 15:14:34 - ---------Epoch 01 | Average Loss: 32.5404
+07-Mar-25 15:14:34 - Model weights saved at ./weights/model_weights20250307150003.pth
+07-Mar-25 15:14:34 - Training Loss saved at ./logs/loss_log_20250307150003_.npy.npz
+07-Mar-25 15:15:25 - ---------Epoch 01 | Average Validation : 21.7523
+07-Mar-25 15:15:25 - ---------Epoch 01 | Overestimation Count (like False Positive): 10388
+07-Mar-25 15:15:25 - ---------Epoch 01 | Underestimation Count (like False Negative): 10616
+07-Mar-25 15:15:25 - Model weights saved at ./weights/model_weights20250307150003.pth```
+   
+```
+
+think deeply what could be the problem
+
+```
+
+think deeply what could be the problem, why loss is plateauing
