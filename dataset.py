@@ -1,72 +1,65 @@
-from torch.utils.data import Dataset, DataLoader,SubsetRandomSampler
 import torch
-import pandas as pd
-import glob
-import os
+from torch.utils.data import Dataset
 import numpy as np
-import json as json
+import os
+import json
+
 class PathLossDataset(Dataset):
-    def __init__(self, parquet_files, max_len=765):
-        self.parquet_files = parquet_files
-        self.max_len = max_len
-        self.file_lengths = []  # Store the length of each file
-        self.cumulative_lengths = [] #Store the cumulative length of all previous files.
-        self._calculate_lengths() #calculate the lengths.
+    def __init__(self, data_dir="./processed_data", split="train", val_ratio=0.1, seed=42):
+        self.data_dir = data_dir
+        
+        # Load stats
+        with open(os.path.join(data_dir, "stats.json"), "r") as f:
+            self.stats = json.load(f)
+            
+        self.total_samples = self.stats["total_samples"]
+        
+        # Load Memmaps (Read-only)
+        self.features = np.memmap(os.path.join(data_dir, "features.npy"), dtype='float32', mode='r', shape=(self.total_samples, 4))
+        self.elevation = np.memmap(os.path.join(data_dir, "elevation.npy"), dtype='float32', mode='r', shape=(self.total_samples, 765))
+        self.targets = np.memmap(os.path.join(data_dir, "targets.npy"), dtype='float32', mode='r', shape=(self.total_samples,))
+        self.masks = np.memmap(os.path.join(data_dir, "masks.npy"), dtype='bool', mode='r', shape=(self.total_samples, 765))
+        
+        # Split indices
+        indices = np.arange(self.total_samples)
+        np.random.seed(seed)
+        np.random.shuffle(indices)
+        
+        val_size = int(self.total_samples * val_ratio)
+        if split == "train":
+            self.indices = indices[val_size:]
+        else:
+            self.indices = indices[:val_size]
+            
+        # Pre-compute normalization constants as tensors for speed
+        self.feat_mean = torch.tensor(self.stats["features_mean"], dtype=torch.float32)
+        self.feat_std = torch.tensor(self.stats["features_std"], dtype=torch.float32)
+        self.elev_mean = torch.tensor(self.stats["elevation_mean"], dtype=torch.float32)
+        self.elev_std = torch.tensor(self.stats["elevation_std"], dtype=torch.float32)
+        self.target_mean = torch.tensor(self.stats["target_mean"], dtype=torch.float32)
+        self.target_std = torch.tensor(self.stats["target_std"], dtype=torch.float32)
 
-    def _calculate_lengths(self):
-        cumulative_len = 0
-        for file in self.parquet_files:
-            df = pd.read_parquet(file)
-            length = len(df)
-            self.file_lengths.append(length)
-            cumulative_len += length
-            self.cumulative_lengths.append(cumulative_len)
-       
     def __len__(self):
-        return self.cumulative_lengths[-1]
-    
+        return len(self.indices)
+
     def __getitem__(self, idx):
-        # Find which file the index belongs to
-        file_index = 0
-        for i, cumulative_len in enumerate(self.cumulative_lengths):
-            if idx < cumulative_len:
-                file_index = i
-                break
-
-        # Calculate the index within the selected file
-        if file_index == 0:
-            local_idx = idx
-        else:
-            local_idx = idx - self.cumulative_lengths[file_index - 1]
-
-        # Load the relevant Parquet file
-        df = pd.read_parquet(self.parquet_files[file_index])
-        row = df.iloc[local_idx]
-        extra_features = torch.tensor([
-            row['dEP_FSRx_m'],
-            row['center_freq'] ,
-            row['receiver_ht_m'],
-            row['accesspoint_ht_m']
-        ], dtype=torch.float32)
-            # Convert elevation_data from string (if needed)
-        if isinstance(row["elevation_data"], str):
-            elevation_data_list = json.loads(row["elevation_data"])  # Convert from JSON string to list
-        else:
-            elevation_data_list = row["elevation_data"]  # Already a list
+        # Map logical index to physical index
+        real_idx = self.indices[idx]
         
-        elevation_data = torch.tensor(elevation_data_list, dtype=torch.float32)
-        seq_len = elevation_data.shape[0]
-        if seq_len < self.max_len:
-            last_value = elevation_data[-1]
-            # Create a padding tensor by repeating the last value
-            padding = last_value.repeat(self.max_len - seq_len)
-            elevation_data = torch.cat([elevation_data, padding])
-        elif seq_len > self.max_len:
-            elevation_data = elevation_data[:self.max_len] #truncate if longer.
-
-        path_loss = torch.tensor(row['path_loss'], dtype=torch.float32)
+        # Read from memmap
+        # Copy is important to avoid negative strides or memory issues with torch
+        features = torch.from_numpy(self.features[real_idx].copy())
+        elevation = torch.from_numpy(self.elevation[real_idx].copy())
+        target = torch.tensor(self.targets[real_idx], dtype=torch.float32)
+        mask = torch.from_numpy(self.masks[real_idx].copy())
         
-          # 4. Create CORRECT mask (True = ignore)
-        padding_mask = torch.zeros(self.max_len, dtype=torch.bool)  # Default: don't mask
-        padding_mask[seq_len:] = True  # ← Mask padded positions
-        return extra_features, elevation_data, path_loss,padding_mask
+        # Normalize
+        features = (features - self.feat_mean) / (self.feat_std + 1e-6)
+        elevation = (elevation - self.elev_mean) / (self.elev_std + 1e-6)
+        # target = (target - self.target_mean) / (self.target_std + 1e-6) # Optional: normalize target?
+        
+        # Note: The original code expected target shape (1,) or scalar. 
+        # Let's return scalar for now, or (1,) if needed.
+        # Original code: target_labels = (B, 1) or (B,)
+        
+        return features, elevation, target, mask

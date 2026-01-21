@@ -25,6 +25,9 @@ import glob
 from datetime import datetime
 import sys
 
+  
+print("Torch version: ",torch.__version__)  # Need 2.0+                                                                                                                                                       
+print("Flash Attention available? ",torch.backends.cuda.flash_sdp_enabled())  # Flash Attention available?  
 
 datetimesatmp = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -140,7 +143,6 @@ class PathLossModel(nn.Module):
             batch_first=True,
         )
         self.multihead_attention = nn.TransformerEncoder(encoder_layer, num_layers=4)
-        self.multihead_attention = encoder_layer
         self.prediction_layer1 = nn.Linear(d_model*2, d_model)
         self.layer_norm1 = nn.LayerNorm(d_model)
         self.prediction_layer2 = nn.Linear(d_model, d_model*4)
@@ -177,7 +179,7 @@ class PathLossModel(nn.Module):
         #                                         key_padding_mask=padding_mask)
         # shape: (B, seq_len, d_model)
         
-        attn_out = self.multihead_attention(pos_embed) # TransformerEncoderLayer
+        attn_out = self.multihead_attention(pos_embed,src_key_padding_mask=padding_mask) # TransformerEncoderLayer
   
   
         # 4. Pool over sequence dimension
@@ -187,7 +189,7 @@ class PathLossModel(nn.Module):
         
         # Pooling step in forward()
         pool_query = other_features_embed.unsqueeze(1)  # (B, 1, d_model)
-        elevation_vector, _ = self.attn_pool(pool_query, attn_out, attn_out)
+        elevation_vector, _ = self.attn_pool(pool_query, attn_out, attn_out, key_padding_mask=padding_mask)
         elevation_vector = elevation_vector.squeeze(1)
         
         # 5. Combine elevation vector with the “other” features
@@ -214,7 +216,7 @@ class PathLossModel(nn.Module):
 model = PathLossModel()
 model.to('cuda')
 #optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4\)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 
 #                                                        mode='min', 
 #                                                        factor=0.25, 
@@ -230,31 +232,40 @@ model.train()
 loss_value_list = []
 
 # Define the folder containing Parquet files
+# Define the folder containing Parquet files
 INPUT_DIR = "./itm_loss"
 # Get a list of all Parquet files in the folder (sorted for consistency)
-parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
-nfiles = len(parquet_files)
-print(f"Number of parquet_files= {nfiles}")
+# parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
+# nfiles = len(parquet_files)
+# print(f"Number of parquet_files= {nfiles}")
 
-parquet_files = parquet_files[:1000]  # Limit to 10 files for testing
+# parquet_files = parquet_files[:1000]  # Limit to 10 files for testing
 
-dataset = PathLossDataset(parquet_files)
-dataset_len = len(dataset)
-train_ratio = 0.90
-train_len = int(dataset_len * train_ratio)
-val_len = dataset_len - train_len
+# dataset = PathLossDataset(parquet_files)
+# dataset_len = len(dataset)
+# train_ratio = 0.90
+# train_len = int(dataset_len * train_ratio)
+# val_len = dataset_len - train_len
 
-indices = list(range(dataset_len))
-np.random.shuffle(indices)  # Shuffle the indices
+# indices = list(range(dataset_len))
+# np.random.shuffle(indices)  # Shuffle the indices
 
-train_indices = indices[:train_len]
-val_indices = indices[train_len:]
+# train_indices = indices[:train_len]
+# val_indices = indices[train_len:]
 
-train_sampler = SubsetRandomSampler(train_indices)
-val_sampler = SubsetRandomSampler(val_indices)
+# train_sampler = SubsetRandomSampler(train_indices)
+# val_sampler = SubsetRandomSampler(val_indices)
 
-train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=train_sampler, num_workers=4, pin_memory=True)
-val_loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=val_sampler, num_workers=4, pin_memory=True)
+# train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=train_sampler, num_workers=4, pin_memory=True)
+# val_loader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=val_sampler, num_workers=4, pin_memory=True)
+
+# NEW DATA LOADING
+log.info("Initializing Datasets...")
+train_dataset = PathLossDataset(split="train")
+val_dataset = PathLossDataset(split="val")
+
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
 # Calculate total steps for training and validation
 train_steps_per_epoch = len(train_loader)
@@ -264,7 +275,7 @@ log.info(f"Training steps per epoch: {train_steps_per_epoch}")
 log.info(f"Validation steps per epoch: {val_steps_per_epoch}")
 
 
-for epoch in range(3):
+for epoch in range(100):
     model.train()
     epoch_loss = 0.0
     num_batches = 0
