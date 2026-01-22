@@ -11,7 +11,7 @@ import time
 import argparse
 import logging as log
 from datetime import datetime
-from model import create_model, process_batch, load_weights, TARGET_MEAN, TARGET_STD
+from pathloss_transformer import create_model, process_batch, load_weights, TARGET_MEAN, TARGET_STD
 
 # Configure logging
 log.basicConfig(level=log.INFO,
