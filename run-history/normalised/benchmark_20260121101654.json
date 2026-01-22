@@ -1,0 +1,14 @@
+{
+  "dataset_size": 16196,
+  "train_files": 12956,
+  "val_files": 3240,
+  "val_samples": 538286,
+  "rmse_db": 22.519723892211914,
+  "mae_db": 15.997858047485352,
+  "median_error_db": 12.187156677246094,
+  "p90_error_db": 32.57881164550781,
+  "p95_error_db": 44.01862335205078,
+  "samples_per_second": 832.4134250575592,
+  "time_per_sample_us": 1201.3261318206787,
+  "batch_size": 30
+}

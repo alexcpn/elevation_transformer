@@ -82,11 +82,17 @@ def process_batch(df, read_seq_length):
     """
     Convert batch data from Pandas DataFrame to PyTorch tensors.
     Handles variable-length elevation_data by padding/truncating.
-    Normalizes target for stable training.
+    Normalizes features and target for stable training.
     """
+    # Feature normalization constants (from analyze_parquet.py)
+    FEAT_MEAN = torch.tensor([135920.0, 6300.0, 41.0, 89.0])
+    FEAT_STD = torch.tensor([46380.0, 100.0, 150.0, 35.0])
 
+    # Elevation normalization (from analyze_parquet.py)
+    ELEV_MEAN = 805.0
+    ELEV_STD = 736.0
 
-    # Convert scalar float columns to tensors (no normalization - physical values)
+    # Convert scalar float columns to tensors
     dEP_FSRx_m = torch.tensor(df['dEP_FSRx_m'].values, dtype=torch.float32)
     center_freq = torch.tensor(df['center_freq'].values, dtype=torch.float32)
     receiver_ht_m = torch.tensor(df['receiver_ht_m'].values, dtype=torch.float32)
@@ -112,8 +118,14 @@ def process_batch(df, read_seq_length):
     # Stack to get (batch_size, read_seq_length)
     elevation_data = torch.stack(elevation_tensors)
 
+    # Normalize elevation data
+    elevation_data = (elevation_data - ELEV_MEAN) / (ELEV_STD + 1e-6)
+
     # Stack all other tensors into a single tensor for batch processing
     input_features = torch.stack([dEP_FSRx_m, center_freq, receiver_ht_m, accesspoint_ht_m], dim=1)
+
+    # Normalize input features
+    input_features = (input_features - FEAT_MEAN) / (FEAT_STD + 1e-6)
 
     return input_features, elevation_data, path_loss
 

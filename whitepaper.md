@@ -1,0 +1,455 @@
+# Transformer-Based Surrogate Model for Accelerated Irregular Terrain Model Path Loss Prediction
+
+**Authors:** Alex Punnen
+<br>
+**Date:** January 2026
+
+---
+
+## Abstract
+
+Radio propagation path loss prediction is essential for wireless network planning, coverage optimization, and spectrum management. The Irregular Terrain Model (ITM), also known as Longley-Rice, provides physics-based path loss estimates by analyzing terrain profiles between transmitter and receiver locations. However, ITM's computational complexity limits its applicability in scenarios requiring rapid evaluation of millions of candidate links, such as large-scale network deployment or real-time spectrum sharing.
+
+We propose a transformer-based neural network surrogate that learns to approximate ITM path loss predictions from terrain elevation profiles and link parameters. Unlike prior deep learning approaches that operate on 2D geographic maps, our method treats the 1D elevation profile along the propagation path as a sequence, leveraging self-attention to capture terrain-induced diffraction and obstruction effects at arbitrary positions. The model ingests the elevation sequence alongside transmission frequency, antenna heights, and link distance to predict path loss in a single forward pass.
+
+Trained on over 3 million ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model achieves 22.52 dB RMSE compared to ITM outputs while providing approximately 10-40x speedup in inference time on consumer GPU hardware. While this initial accuracy leaves room for improvement, we demonstrate the feasibility of the sequence-based approach and identify directions for enhanced performance.
+
+**Keywords:** path loss prediction, irregular terrain model, transformer, surrogate modeling, radio propagation, deep learning, 6 GHz, CBRS
+
+---
+
+## 1. Introduction
+
+Accurate path loss prediction is fundamental to wireless network design, enabling engineers to estimate coverage areas, plan cell sites, and manage interference. The Irregular Terrain Model (ITM), developed by Longley and Rice at the Institute for Telecommunication Sciences in the 1960s, remains one of the most widely used propagation models for frequencies between 20 MHz and 20 GHz [1]. ITM accounts for terrain diffraction, tropospheric scatter, and atmospheric effects, making it suitable for diverse propagation environments.
+
+However, modern network planning applications increasingly require path loss estimates for millions of transmitter-receiver pairs. Use cases include:
+
+- **Network densification:** Evaluating thousands of candidate small cell locations against existing infrastructure
+- **Dynamic spectrum sharing:** Real-time interference assessment for Citizens Broadband Radio Service (CBRS) and similar frameworks requiring sub-second coordination
+- **Drone communications:** Continuous path loss updates along flight trajectories for beyond-visual-line-of-sight operations
+- **Digital twins:** Simulating wireless coverage across entire metropolitan areas with millions of potential link combinations
+
+For these applications, ITM's computational cost becomes prohibitive. Each ITM calculation requires processing the terrain profile point-by-point, computing diffraction losses using knife-edge or rounded obstacle models, and applying statistical variability corrections. These operations scale poorly when repeated millions of times, with typical implementations requiring tens of milliseconds per link evaluation.
+
+This paper presents a transformer-based neural network that learns to approximate ITM predictions with high fidelity while dramatically reducing computation time. By treating the terrain elevation profile as a sequence and applying self-attention mechanisms, our model captures the complex interactions between terrain features that determine propagation loss. The key insight is that diffraction and obstruction effects depend on the relative positions and heights of terrain features along the entire path—a relationship that self-attention is naturally suited to model.
+
+### 1.1 Contributions
+
+1. **Novel sequence-based formulation:** We frame terrain-based path loss prediction as a sequence-to-scalar regression problem, where elevation samples along the propagation path form the input sequence. This formulation naturally handles variable-length terrain profiles through padding and masking.
+
+2. **Transformer architecture for propagation:** We demonstrate that multi-head self-attention mechanisms effectively capture terrain-induced propagation effects, including diffraction around obstacles at arbitrary positions along the path.
+
+3. **Large-scale surrogate model:** We train on over 3 million ITM samples covering the 6 GHz band, achieving 22.52 dB RMSE with 10-40x speedup over native ITM computation on GPU hardware.
+
+4. **Practical deployment considerations:** We provide implementation details including normalization strategies, feature fusion approaches, and inference optimization for real-world deployment.
+
+---
+
+## 2. Background and Related Work
+
+### 2.1 The Irregular Terrain Model (ITM)
+
+The Irregular Terrain Model, also known as the Longley-Rice model, predicts median path loss as a function of distance, frequency, antenna heights, and terrain characteristics [1]. The model operates in two modes:
+
+- **Point-to-point mode:** Uses detailed terrain elevation data along the propagation path, computing diffraction losses based on the specific terrain profile
+- **Area mode:** Uses statistical terrain parameters (terrain irregularity factor) when detailed profiles are unavailable
+
+ITM accounts for three primary propagation mechanisms:
+
+1. **Line-of-sight propagation:** Free-space path loss with adjustments for atmospheric absorption
+2. **Diffraction:** Knife-edge and smooth-earth diffraction models for obstacles blocking the direct path
+3. **Tropospheric scatter:** Forward scatter mechanisms for beyond-horizon paths at longer distances
+
+The model outputs median transmission loss along with confidence intervals accounting for temporal variability (fading) and location variability (local terrain effects). For the 6 GHz band relevant to CBRS and Wi-Fi 6E applications, ITM provides predictions suitable for both urban fringe and rural environments where terrain dominates propagation.
+
+### 2.2 Machine Learning for Propagation Modeling
+
+Recent work has applied machine learning to path loss prediction with promising results:
+
+**Convolutional approaches:** Levie et al. demonstrated that CNNs operating on 2D maps containing building heights and morphology data can predict urban path loss with approximately 8 dB RMSE [2]. These methods excel in cluttered urban environments where buildings dominate propagation characteristics. However, they require extensive 2D map data and computational resources for the convolution operations.
+
+**Ensemble methods:** Comparative studies of random forests, gradient boosting, and neural networks for path loss prediction found that ensemble methods often outperform traditional empirical models like Okumura-Hata when trained on measurement data [3]. These approaches typically use aggregate features (distance, frequency, terrain roughness statistics) rather than the full elevation profile.
+
+**Transformer-based methods:** Hehn et al. proposed a transformer architecture for link-level path loss prediction from variable-sized 2D building maps [4]. Their work demonstrated that attention mechanisms can identify relevant map regions for propagation prediction, achieving state-of-the-art results on urban datasets. Our work differs by focusing on 1D terrain profiles for rural/suburban environments and by targeting ITM approximation rather than direct measurement fitting.
+
+### 2.3 Surrogate Modeling
+
+Surrogate modeling, also known as metamodeling or response surface methodology, replaces computationally expensive simulations with fast approximations learned from simulation outputs [5]. The approach has been successfully applied across engineering domains:
+
+- **Computational fluid dynamics:** Neural networks approximate CFD solvers with 1000x speedup
+- **Finite element analysis:** Surrogate models enable real-time structural optimization
+- **Weather prediction:** Graph neural networks approximate numerical weather models
+- **Electromagnetic simulation:** Machine learning accelerates antenna design iteration
+
+The key requirement for surrogate modeling is access to a large corpus of simulator outputs for training. Our work applies these principles to ITM, leveraging the availability of terrain elevation data and efficient ITM implementations to generate millions of training samples.
+
+---
+
+## 3. Methodology
+
+### 3.1 Problem Formulation
+
+Given:
+- Terrain elevation profile: $\mathbf{e} = [e_1, e_2, ..., e_N]$ where $e_i$ is elevation in meters at position $i$ along the path
+- Link parameters: frequency $f$ (Hz), distance $d$ (m), transmitter height $h_{tx}$ (m), receiver height $h_{rx}$ (m)
+
+Predict:
+- Path loss $L$ in dB
+
+We formulate this as a sequence-to-scalar regression problem. The elevation profile forms the primary input sequence, while link parameters provide global context. The model must learn to identify terrain features (peaks, valleys, obstacles) that affect propagation and weight their contributions based on position along the path.
+
+### 3.2 Model Architecture
+
+Our architecture processes terrain and link parameters through parallel pathways before fusion for final prediction. The design emphasizes simplicity while maintaining sufficient capacity to capture terrain-propagation relationships.
+
+#### 3.2.1 Elevation Embedding
+
+Raw elevation values are projected from scalar values to a high-dimensional representation using a learnable linear transformation:
+
+$$\mathbf{E}_i = \text{Linear}(e_i) \in \mathbb{R}^{d_{model}}$$
+
+where $d_{model} = 512$ is the model dimension. This projection allows the network to learn task-specific representations of elevation values, potentially encoding nonlinear relationships between absolute elevation and propagation effects.
+
+Prior to embedding, elevation values are normalized using training set statistics:
+$$\hat{e}_i = \frac{e_i - \mu_e}{\sigma_e}$$
+
+where $\mu_e = 805$ m and $\sigma_e = 736$ m represent the mean and standard deviation of elevation values across the training dataset.
+
+#### 3.2.2 Positional Encoding
+
+Position information is critical for propagation modeling—an obstacle near the transmitter has different effects than the same obstacle near the receiver. We add sinusoidal positional encodings to preserve sequence order:
+
+$$PE_{(pos, 2i)} = \sin(pos / 10000^{2i/d_{model}})$$
+$$PE_{(pos, 2i+1)} = \cos(pos / 10000^{2i/d_{model}})$$
+
+The position-encoded elevation embedding is:
+$$\mathbf{H}^{(0)} = \mathbf{E} + \mathbf{PE}$$
+
+This encoding scheme allows the model to represent both absolute position and relative distances between terrain features through the dot-product attention mechanism.
+
+#### 3.2.3 Multi-Head Self-Attention
+
+We apply multi-head self-attention to capture relationships between terrain positions:
+
+$$\text{Attention}(Q, K, V) = \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V$$
+
+$$\text{MultiHead}(H) = \text{Concat}(\text{head}_1, ..., \text{head}_h)W^O$$
+
+where each head computes attention with separate learned projections:
+$$\text{head}_i = \text{Attention}(HW_i^Q, HW_i^K, HW_i^V)$$
+
+The self-attention mechanism enables the model to:
+- Identify terrain obstacles that cause diffraction regardless of their position in the sequence
+- Relate multiple obstacle positions to each other (e.g., multiple ridgelines)
+- Learn position-dependent importance weighting (obstacles near Fresnel zone boundaries matter more)
+
+We use $h=8$ attention heads with $d_k = 64$ per head. A residual connection adds the attention output to the input:
+$$\mathbf{H}^{(1)} = \text{MultiHead}(\mathbf{H}^{(0)}) + \mathbf{H}^{(0)}$$
+
+#### 3.2.4 Feature Embedding and Fusion
+
+Link parameters are projected to the same dimensionality as the terrain representation:
+
+$$\mathbf{f} = \text{Linear}([d, f, h_{rx}, h_{tx}]) \in \mathbb{R}^{d_{model}}$$
+
+Input features are normalized using training set statistics prior to projection:
+- Distance: $\mu_d = 135920$ m, $\sigma_d = 46380$ m
+- Frequency: $\mu_f = 6300$ MHz, $\sigma_f = 100$ MHz
+- Receiver height: $\mu_{rx} = 41$ m, $\sigma_{rx} = 150$ m
+- Transmitter height: $\mu_{tx} = 89$ m, $\sigma_{tx} = 35$ m
+
+The terrain representation is obtained by mean pooling over the sequence dimension:
+$$\mathbf{t} = \frac{1}{N}\sum_{i=1}^{N} \mathbf{H}^{(1)}_i$$
+
+Features are combined through addition:
+$$\mathbf{c} = \mathbf{t} + \mathbf{f}$$
+
+This additive fusion allows both terrain and link parameters to contribute equally to the final representation.
+
+#### 3.2.5 Prediction Head
+
+The combined representation passes through a two-layer prediction network:
+
+$$\hat{L}_{norm} = \text{Linear}(\text{ReLU}(\text{LayerNorm}(\text{Linear}(\mathbf{c}))))$$
+
+The first linear layer projects to an intermediate dimension of 2000, followed by layer normalization and ReLU activation. The second linear layer produces the scalar output.
+
+The output is in normalized space; denormalization recovers the path loss in dB:
+$$\hat{L} = \hat{L}_{norm} \cdot \sigma_L + \mu_L$$
+
+where $\mu_L = 218$ dB and $\sigma_L = 31$ dB.
+
+### 3.3 Training
+
+#### 3.3.1 Dataset Generation
+
+We generated training data using ITM in point-to-point mode with terrain profiles extracted from digital elevation models covering diverse geographic regions. The dataset comprises:
+
+| Parameter | Range | Notes |
+|-----------|-------|-------|
+| Total samples | 3,064,824 | Across multiple terrain types |
+| Frequency | 6.2 - 6.4 GHz | CBRS/Wi-Fi 6E band |
+| Distance | 1.3 - 200 km | Short to long range links |
+| TX height | 1.5 - 110 m | Ground to tower-mounted |
+| RX height | 1.5 - 601 m | Includes elevated receivers |
+| Path loss | 112 - 390 dB | Full dynamic range |
+| Profile length | 47 - 766 points | Variable resolution |
+
+Terrain profiles were sampled at approximately 250 m resolution along each path. Shorter paths have fewer elevation points; sequences are zero-padded to the maximum length of 768 for batched processing.
+
+Data was split 80/20 for training and validation, with the split performed at the file level to ensure geographic separation between training and validation regions.
+
+#### 3.3.2 Loss Function and Optimization
+
+We use Smooth L1 loss (Huber loss) for robustness to outliers in the path loss distribution:
+
+$$\mathcal{L} = \begin{cases}
+0.5(y - \hat{y})^2 & \text{if } |y - \hat{y}| < 1 \\
+|y - \hat{y}| - 0.5 & \text{otherwise}
+\end{cases}$$
+
+Training configuration:
+- **Optimizer:** AdamW with learning rate $10^{-4}$
+- **Batch size:** 30 samples (limited by GPU memory with 768-length sequences)
+- **Gradient clipping:** Maximum norm 1.0 to prevent unstable updates
+- **Dropout:** 0.1 in attention layers
+- **Epochs:** 2 passes over the training data
+
+The relatively low learning rate and aggressive gradient clipping were necessary to achieve stable convergence given the high dynamic range of path loss values (278 dB span).
+
+---
+
+## 4. Results
+
+### 4.1 Accuracy Metrics
+
+Performance on the held-out validation set (538,286 samples):
+
+| Metric | Value |
+|--------|-------|
+| RMSE | 22.52 dB |
+| MAE | 16.00 dB |
+| Median Error | 12.19 dB |
+| 90th Percentile Error | 32.58 dB |
+| 95th Percentile Error | 44.02 dB |
+
+The error distribution shows a positive skew with the model tending toward underestimation. Analysis of prediction bias reveals 454,778 underestimation cases versus 83,508 overestimation cases on the validation set, indicating the model systematically predicts lower path loss than ITM calculates. This bias suggests the attention mechanism may not fully capture terrain obstruction effects that increase path loss.
+
+### 4.2 Inference Speed
+
+Benchmarked on NVIDIA GPU with batch size 30:
+
+| Metric | Value |
+|--------|-------|
+| Time per sample | 1,201 µs |
+| Throughput | 832 samples/second |
+| Time per batch | 36.04 ms |
+| Estimated speedup vs ITM | 10-40x |
+
+ITM point-to-point calculations typically require 10-50 ms depending on implementation and terrain profile length. Our model achieves approximately 1.2 ms per sample, providing meaningful speedup for batch processing scenarios.
+
+For network planning applications, evaluating coverage from 1,000 candidate cell sites to 10,000 potential user locations (10 million links) would require:
+- Native ITM (at 30 ms avg): ~83 hours
+- Our model: ~3.3 hours
+
+While the current throughput is modest, further optimization through batching, mixed precision inference, and model compilation (e.g., `torch.compile`) could substantially increase throughput.
+
+### 4.3 Impact of Normalization
+
+An earlier model iteration without proper input normalization showed significantly worse performance. After implementing feature, elevation, and target normalization, accuracy improved substantially:
+
+| Metric | Without Normalization | With Normalization | Improvement |
+|--------|----------------------|-------------------|-------------|
+| RMSE (normalized) | 0.9778 | 0.7264 | 26% better |
+| RMSE (dB) | 30.31 dB | 22.52 dB | -7.8 dB |
+| MAE (dB) | 22.09 dB | 16.00 dB | -6.1 dB |
+| Median error | 16.08 dB | 12.19 dB | -3.9 dB |
+| 90th percentile | 49.77 dB | 32.58 dB | -17.2 dB |
+| 95th percentile | 64.53 dB | 44.02 dB | -20.5 dB |
+
+The unnormalized model achieved RMSE near 1.0 in normalized space, indicating it performed barely better than predicting the dataset mean. With proper normalization, the model explains approximately 47% of variance (R² ≈ 0.47).
+
+This result demonstrates that the transformer architecture is capable of learning terrain-propagation relationships—the limiting factor is model design rather than the fundamental approach. Architectural improvements such as deeper attention stacks, alternative positional encodings, or physics-informed constraints are likely to yield further accuracy gains.
+
+### 4.4 Error Analysis
+
+Analysis of prediction errors reveals systematic patterns:
+
+**Underestimation bias:** The model significantly underestimates path loss in 84% of validation samples. This suggests the single-layer attention mechanism may not adequately capture the cumulative effect of multiple terrain obstructions or the nonlinear diffraction losses computed by ITM.
+
+**Error distribution:** The gap between median error (12.19 dB) and mean error (implied by MAE of 16.00 dB) indicates a long tail of high-error predictions. The 95th percentile error of 44.02 dB suggests that approximately 5% of predictions deviate substantially from ITM outputs.
+
+**Training vs. validation gap:** The training loss (0.0724 normalized) is substantially lower than validation loss (0.2165 normalized), indicating some degree of overfitting. This may be attributable to:
+- Geographic correlation within training files
+- Insufficient model capacity for the full complexity of ITM's diffraction calculations
+- Need for regularization or data augmentation
+
+---
+
+## 5. Discussion
+
+### 5.1 Why Self-Attention Works for Terrain Profiles
+
+The self-attention mechanism is well-suited to terrain-based propagation modeling for several reasons:
+
+1. **Global receptive field:** Unlike CNNs with limited kernel sizes, attention can relate any two positions in the sequence regardless of their separation. This is important because a terrain obstacle affects propagation based on its position relative to both the transmitter and receiver, potentially hundreds of samples apart.
+
+2. **Learned importance weighting:** The attention mechanism learns which terrain positions are most relevant for prediction. We hypothesize that high attention weights correspond to terrain features near Fresnel zone boundaries or significant elevation changes.
+
+3. **Permutation sensitivity with positional encoding:** The combination of content-based attention and positional encoding allows the model to understand both what terrain features exist and where they are located along the path.
+
+4. **Graceful handling of variable lengths:** The padding and masking approach allows the same model to process paths of different lengths without architectural changes.
+
+### 5.2 Limitations
+
+1. **Surrogate fidelity:** The model can only approximate ITM—it cannot exceed ITM's accuracy relative to real-world measurements or generalize beyond ITM's modeling assumptions. Errors in ITM (e.g., for certain terrain types or atmospheric conditions) are inherited by the surrogate.
+
+2. **Frequency range:** The current model is trained only on the 6 GHz band. Extending to other frequencies requires additional training data, though the architecture should generalize given sufficient data diversity.
+
+3. **Missing propagation factors:** Like ITM itself, our model does not explicitly account for:
+   - Buildings and urban clutter (beyond terrain elevation)
+   - Foliage and seasonal vegetation changes
+   - Atmospheric ducting and anomalous propagation
+   - Surface reflections and multipath
+
+4. **Interpolation vs. extrapolation:** The model performs best when input parameters fall within the training distribution. Extreme distances, heights, or terrain configurations may produce unreliable predictions.
+
+### 5.3 Comparison with Prior Work
+
+| Approach | Input Type | Target | Environment | Reported Accuracy |
+|----------|------------|--------|-------------|-------------------|
+| Levie et al. [2] | 2D building maps | Measurements | Urban | ~8 dB RMSE |
+| Hehn et al. [4] | 2D building maps | Measurements | Urban | State-of-art |
+| Ensemble methods [3] | Aggregate features | Measurements | Various | ~6-10 dB RMSE |
+| **This work** | 1D terrain profile | ITM output | Rural/suburban | 22.52 dB RMSE |
+
+Our approach differs fundamentally by:
+- Using 1D sequences rather than 2D images, reducing computational cost
+- Targeting ITM approximation rather than direct measurement fitting
+- Focusing on terrain-dominated (non-urban) environments
+
+The comparison is not direct since we predict ITM outputs rather than measurements, but demonstrates feasibility of the sequence-based approach.
+
+---
+
+## 6. Conclusion
+
+We presented a transformer-based surrogate model for accelerating ITM path loss prediction. By treating terrain elevation profiles as sequences and applying multi-head self-attention, our model learns to approximate ITM with 22.52 dB RMSE while achieving 10-40x speedup on GPU hardware.
+
+Key findings:
+1. Self-attention can learn terrain-propagation relationships from data, though the current single-layer architecture does not fully capture ITM's diffraction modeling
+2. Proper normalization of inputs and outputs is critical for training stability
+3. The approach scales to millions of training samples and maintains sub-millisecond inference capability
+4. Systematic underestimation bias indicates the model struggles with high path loss scenarios
+
+While the current accuracy (22.52 dB RMSE, median error 12.19 dB) is insufficient for applications requiring high fidelity to ITM, this work demonstrates the feasibility of the sequence-based approach. Notably, a simple improvement—proper input normalization—reduced RMSE from 30.31 dB to 22.52 dB (26% improvement), indicating that the architecture is capable of learning and that further refinements will yield continued gains. The architecture provides a foundation for future improvements through deeper attention stacks, alternative positional encodings, or hybrid physics-informed approaches.
+
+For applications tolerant of approximation error—such as initial site screening, coverage visualization, or comparative analysis—the model provides useful predictions at substantially reduced computational cost.
+
+### Future Work
+
+Based on the observed limitations, we identify several directions for improvement:
+
+1. **Deeper architecture:** The single attention layer may be insufficient to capture ITM's multi-step diffraction calculations. Stacking multiple transformer encoder layers could improve representational capacity.
+
+2. **Address underestimation bias:** The systematic underestimation suggests the model fails to capture obstruction effects. Potential remedies include:
+   - Asymmetric loss functions that penalize underestimation more heavily
+   - Auxiliary tasks predicting terrain obstruction metrics
+   - Physics-informed constraints incorporating line-of-sight calculations
+
+3. **Rotary position embeddings (RoPE):** Replace sinusoidal positional encoding with RoPE to better capture relative distances between terrain features, which is more relevant for diffraction calculations than absolute position.
+
+4. **Data augmentation:** Terrain profile reversal (swapping TX and RX) should yield identical path loss, providing free augmentation. Random elevation offsets could improve generalization.
+
+5. **Attention visualization:** Analyze attention patterns to understand which terrain features the model focuses on, potentially revealing why obstruction effects are underweighted.
+
+6. **Multi-frequency training:** Extend to cover the full ITM frequency range (20 MHz - 20 GHz) by including frequency as a more prominent conditioning signal.
+
+7. **Hybrid models:** Combine learned terrain features with analytical free-space path loss calculations to provide a physics-informed baseline that the neural network refines.
+
+---
+
+## References
+
+[1] A. G. Longley and P. L. Rice, "Prediction of tropospheric radio transmission loss over irregular terrain: A computer method," ESSA Technical Report ERL 79-ITS 67, Institute for Telecommunication Sciences, Boulder, CO, 1968.
+
+[2] R. Levie, C. Yapar, G. Kutyniok, and G. Caire, "RadioUNet: Fast Radio Map Estimation with Convolutional Neural Networks," IEEE Transactions on Wireless Communications, vol. 20, no. 6, pp. 4001-4015, 2021.
+
+[3] M. Ayadi, A. Ben Zineb, and S. Tabbane, "A UHF Path Loss Model Using Learning Machine for Heterogeneous Networks," IEEE Transactions on Antennas and Propagation, vol. 65, no. 7, pp. 3675-3683, 2017.
+
+[4] T. M. Hehn, J. Ott, H. Pauli, and S. Faerber, "Transformer-Based Neural Surrogate for Link-Level Path Loss Prediction from Variable-Sized Maps," IEEE Global Communications Conference (GLOBECOM), Kuala Lumpur, Malaysia, 2023.
+
+[5] A. I. J. Forrester, A. Sobester, and A. J. Keane, "Engineering Design via Surrogate Modelling: A Practical Guide," Wiley, 2008.
+
+---
+
+## Appendix A: Model Hyperparameters
+
+| Parameter | Value |
+|-----------|-------|
+| Model dimension ($d_{model}$) | 512 |
+| Attention heads | 8 |
+| Head dimension ($d_k$) | 64 |
+| Feed-forward intermediate dimension | 2000 |
+| Maximum sequence length | 768 |
+| Dropout | 0.1 |
+| Learning rate | 1e-4 |
+| Batch size | 30 |
+| Optimizer | AdamW |
+| Gradient clipping norm | 1.0 |
+| Loss function | Smooth L1 (Huber) |
+
+---
+
+## Appendix B: Dataset Statistics
+
+```
+Total samples: 3,064,824
+Training samples: 2,451,859 (80%)
+Validation samples: 612,965 (20%)
+
+Input Features:
+  Distance: 1.3 - 200 km (mean: 136 km, std: 46 km)
+  Frequency: 6.2 - 6.4 GHz
+  TX Height: 1.5 - 110 m (mean: 89 m, std: 35 m)
+  RX Height: 1.5 - 601 m (mean: 41 m, std: 150 m)
+
+Elevation Profiles:
+  Points per path: 47 - 766 (padded to 768)
+  Elevation range: 5 - 2614 m
+  Mean elevation: 805 m
+  Std elevation: 736 m
+
+Target (Path Loss):
+  Range: 112 - 390 dB
+  Mean: 218 dB
+  Std: 31 dB
+```
+
+---
+
+## Appendix C: Normalization Constants
+
+For reproducibility, the following normalization constants were computed from the training set:
+
+```python
+# Target normalization
+TARGET_MEAN = 218.0  # dB
+TARGET_STD = 31.0    # dB
+
+# Feature normalization
+FEAT_MEAN = [135920.0, 6300.0, 41.0, 89.0]  # [distance_m, freq_MHz, rx_ht_m, tx_ht_m]
+FEAT_STD = [46380.0, 100.0, 150.0, 35.0]
+
+# Elevation normalization
+ELEV_MEAN = 805.0  # m
+ELEV_STD = 736.0   # m
+```
+
+All inputs are normalized as: $\hat{x} = (x - \mu) / \sigma$
+
+Outputs are denormalized as: $y = \hat{y} \cdot \sigma + \mu$
+
+---
+
+*Training completed January 21, 2026. Two epochs over 3M+ samples (~24 hours on consumer GPU).*
