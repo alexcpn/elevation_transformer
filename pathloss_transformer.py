@@ -61,14 +61,22 @@ class PathLossModel(nn.Module):
         vocab_size = 2000
         d_k = 64  # attention size
         read_seq_length = 768
-        d_model = 512  # embediding size
-        final_size = 1 # we just want one value
-        num_heads = 8  
+        d_model = 512  # embedding size
+        final_size = 1  # we just want one value
+        num_heads = 8
         extra_feature_size = 4
-        
+
         self.pos_encoding = PositionalEncoding(d_model, read_seq_length)
         self.extra_features_embedding = nn.Linear(extra_feature_size, d_model)
         self.multihead_attention = nn.MultiheadAttention(d_model, num_heads, dropout=0.1, batch_first=True)
+
+        # Attention pooling: learns which positions matter for path loss prediction
+        self.pool_attention = nn.Sequential(
+            nn.Linear(d_model, d_model // 4),
+            nn.Tanh(),
+            nn.Linear(d_model // 4, 1)
+        )
+
         self.prediction_layer1 = nn.Linear(d_model, vocab_size)
         self.layer_norm1 = nn.LayerNorm(vocab_size)
         self.prediction_layer2 = nn.Linear(vocab_size, final_size)
@@ -78,9 +86,16 @@ class PathLossModel(nn.Module):
         # project to higher dim
         extra_features_tokens = self.extra_features_embedding(input_features)  # (B, 512)
         pos_embedded_tokens = self.pos_encoding(elevation_data)
+
+        # full self attention - Key, Query, Value
         score, _ = self.multihead_attention(pos_embedded_tokens, pos_embedded_tokens, pos_embedded_tokens)
-        hidden1 = score + pos_embedded_tokens
-        pooled_score = hidden1.mean(dim=1)  # (B, 512)
+        hidden1 = score + pos_embedded_tokens  # (B, seq_len, 512)
+
+        # Attention pooling: learn which terrain positions matter most
+        # Instead of mean pooling, compute attention weights over positions
+        attn_scores = self.pool_attention(hidden1)  # (B, seq_len, 1)
+        attn_weights = F.softmax(attn_scores, dim=1)  # (B, seq_len, 1)
+        pooled_score = (hidden1 * attn_weights).sum(dim=1)  # (B, 512)
 
         # Combine elevation features with extra features
         combined = pooled_score + extra_features_tokens  # (B, 512)
@@ -90,6 +105,7 @@ class PathLossModel(nn.Module):
         hidden2 = F.relu(hidden2)
         logits = self.prediction_layer2(hidden2)
         return logits
+
 
 def create_model():
     return PathLossModel()
@@ -142,37 +158,7 @@ def process_batch(df, read_seq_length=768):
     return input_features, elevation_data, path_loss
 
 def load_weights(model, weights_path):
-    state_dict = torch.load(weights_path)
-    
-    # Check if keys match the old ModuleList format (0.pe, 1.in_proj_weight, etc.)
-    # and map them to the new PathLossModel format
-    new_state_dict = {}
-    
-    # Mapping from index to attribute name
-    key_map = {
-        '0': 'pos_encoding',
-        '1': 'multihead_attention',
-        '2': 'extra_features_embedding',
-        '3': 'layer_norm1',
-        '4': 'layer_norm2',
-        '5': 'prediction_layer1',
-        '6': 'prediction_layer2'
-    }
-    
-    keys_updated = False
-    for key, value in state_dict.items():
-        parts = key.split('.')
-        if parts[0] in key_map:
-            new_key = key_map[parts[0]] + '.' + '.'.join(parts[1:])
-            new_state_dict[new_key] = value
-            keys_updated = True
-        else:
-            new_state_dict[key] = value
-            
-    if keys_updated:
-        print("Converted legacy ModuleList state_dict to PathLossModel format.")
-        model.load_state_dict(new_state_dict)
-    else:
-        model.load_state_dict(state_dict)
-    
+    """Load weights from file. Crashes if model architecture doesn't match."""
+    state_dict = torch.load(weights_path, weights_only=True)
+    model.load_state_dict(state_dict)
     return model
