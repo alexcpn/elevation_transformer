@@ -28,9 +28,13 @@ from pathloss_transformer import create_model, process_batch, TARGET_MEAN, TARGE
 
 # Set to None to train from scratch, or path to weights file to resume
 RESUME_FROM_WEIGHTS = "./weights/model_weights20260122140404.pth"  # Set to None to start fresh
-
+RESUME_FROM_WEIGHTS = "./weights/model_weights20260122182246.pth"
 # High loss threshold for diagnostic logging
 HIGH_LOSS_THRESHOLD = 0.5  # Log batches with loss above this value
+
+# Weighted loss: upweight hard examples
+USE_WEIGHTED_LOSS = True  # Set to False for standard loss
+WEIGHT_SCALE = 1.0  # How much to scale weights (higher = more focus on hard examples)
 
 datetimesatmp = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -171,7 +175,19 @@ for epoch in range(1):
         # Mixed precision forward pass
         with torch.amp.autocast('cuda', enabled=USE_AMP):
             logits = model(input_features, elevation_data)
-            loss = loss_function(logits.squeeze(1), target_labels)
+            preds = logits.squeeze(1)
+
+            if USE_WEIGHTED_LOSS:
+                # Weighted loss: harder examples get higher weight
+                with torch.no_grad():
+                    errors = torch.abs(preds - target_labels)
+                    # Weight = 1 + scaled error (clamped to avoid extreme weights)
+                    weights = 1.0 + WEIGHT_SCALE * torch.clamp(errors, 0, 3)
+                # Compute per-sample loss and apply weights
+                per_sample_loss = F.smooth_l1_loss(preds, target_labels, reduction='none')
+                loss = (weights * per_sample_loss).mean()
+            else:
+                loss = loss_function(preds, target_labels)
 
         optimizer.zero_grad()
 
