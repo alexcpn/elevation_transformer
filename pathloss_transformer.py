@@ -71,17 +71,20 @@ class PathLossModel(nn.Module):
         # Scalar feature embedding: Projects 4 scalars -> d_model
         self.extra_features_embedding = nn.Linear(extra_feature_size, d_model)
         
-        # Transformer Encoder Stack
+        # Transformer Encoder Stack (Processes Terrain)
         # batch_first=True means input is (Batch, Seq, Feature)
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=num_heads, 
                                                  dim_feedforward=2048, dropout=dropout, 
                                                  batch_first=True)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
+        # Cross Attention: Scalars (Query) -> Terrain (Key/Value)
+        self.cross_attention = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+
         # Output Head
         # We take the transformed scalar token and predict path loss
         self.head = nn.Sequential(
-            nn.Linear(d_model, 256),
+            nn.Linear(d_model*2, 256),
             nn.LayerNorm(256),
             nn.ReLU(),
             nn.Dropout(dropout),
@@ -92,28 +95,30 @@ class PathLossModel(nn.Module):
         # 1. Embed Scalars
         # input_features: (B, 4) -> (B, 1, 512)
         scalar_token = self.extra_features_embedding(input_features).unsqueeze(1)
-        print(scalar_token.shape)
+        
         # 2. Embed Terrain
         # elevation_data: (B, 768) -> (B, 768, 512)
         elevation_tokens = self.pos_encoding(elevation_data)
-        print(elevation_tokens.shape)
-        # 3. Concatenate: [ScalarToken, Elev1, Elev2, ...]
-        # New shape: (B, 1 + 768, 512)
-        x = torch.cat([scalar_token, elevation_tokens], dim=1)
-        print(x.shape)
         
-        # 4. Pass through Transformer
-        # All tokens interact. The scalar token "attends" to the terrain.
-        x = self.transformer(x)
-        print(x.shape)
-        # 5. Extract the first token (the updated Scalar Token)
-        # It now contains physics info + relevant terrain features
-        cls_token = x[:, 0, :] # (B, 512)
-        print(cls_token.shape)
+        # 3. Process Terrain with Transformer (Self-Attention)
+        # Ideally, the terrain learns its own features (hills, valleys) first
+        # (B, 768, 512)
+        elevation_features = self.transformer(elevation_tokens)
+        
+        # 4. Cross Attention: Scalars query the Terrain
+        # Query: Scalar Token (B, 1, 512)
+        # Key/Value: Elevation Features (B, 768, 512)
+        # Output: (B, 1, 512)
+        # This asks: "Given this Freq/Height, which terrain parts matter?"
+        context, _ = self.cross_attention(query=scalar_token, key=elevation_features, value=elevation_features)
+        
+        # 5. Fuse (Residual Connection)
+        # Add the context back to the scalar token
+        fused = torch.cat([scalar_token, context], dim=-1) # (B, 1, 1024)
         
         # 6. Predict
-        logits = self.head(cls_token) # (B, 1)
-        return logits
+        logits = self.head(fused) # (B, 1, 1) -> (B, 1)
+        return logits.squeeze(1)
 
 
 def create_model():
