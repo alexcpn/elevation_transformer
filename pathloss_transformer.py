@@ -58,52 +58,61 @@ class PositionalEncoding(nn.Module):
 class PathLossModel(nn.Module):
     def __init__(self):
         super().__init__()
-        vocab_size = 2000
-        d_k = 64  # attention size
         read_seq_length = 768
         d_model = 512  # embedding size
-        final_size = 1  # we just want one value
+        final_size = 1
         num_heads = 8
-        extra_feature_size = 4
+        extra_feature_size = 4 # these are the 4 scalar features, frequency, receiver height, accesspoint height, and distance
+        num_layers = 3 # Stack of 3 transformer layers
+        dropout = 0.1
 
         self.pos_encoding = PositionalEncoding(d_model, read_seq_length)
+        
+        # Scalar feature embedding: Projects 4 scalars -> d_model
         self.extra_features_embedding = nn.Linear(extra_feature_size, d_model)
-        self.multihead_attention = nn.MultiheadAttention(d_model, num_heads, dropout=0.1, batch_first=True)
+        
+        # Transformer Encoder Stack
+        # batch_first=True means input is (Batch, Seq, Feature)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=num_heads, 
+                                                 dim_feedforward=2048, dropout=dropout, 
+                                                 batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
-        # Attention pooling: learns which positions matter for path loss prediction
-        self.pool_attention = nn.Sequential(
-            nn.Linear(d_model, d_model // 4),
-            nn.Tanh(),
-            nn.Linear(d_model // 4, 1)
+        # Output Head
+        # We take the transformed scalar token and predict path loss
+        self.head = nn.Sequential(
+            nn.Linear(d_model, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, final_size)
         )
 
-        self.prediction_layer1 = nn.Linear(d_model, vocab_size)
-        self.layer_norm1 = nn.LayerNorm(vocab_size)
-        self.prediction_layer2 = nn.Linear(vocab_size, final_size)
-        self.layer_norm2 = nn.LayerNorm(final_size)
-
     def forward(self, input_features, elevation_data):
-        # project to higher dim
-        extra_features_tokens = self.extra_features_embedding(input_features)  # (B, 512)
-        pos_embedded_tokens = self.pos_encoding(elevation_data)
-
-        # full self attention - Key, Query, Value
-        score, _ = self.multihead_attention(pos_embedded_tokens, pos_embedded_tokens, pos_embedded_tokens)
-        hidden1 = score + pos_embedded_tokens  # (B, seq_len, 512)
-
-        # Attention pooling: learn which terrain positions matter most
-        # Instead of mean pooling, compute attention weights over positions
-        attn_scores = self.pool_attention(hidden1)  # (B, seq_len, 1)
-        attn_weights = F.softmax(attn_scores, dim=1)  # (B, seq_len, 1)
-        pooled_score = (hidden1 * attn_weights).sum(dim=1)  # (B, 512)
-
-        # Combine elevation features with extra features
-        combined = pooled_score + extra_features_tokens  # (B, 512)
-
-        hidden2 = self.prediction_layer1(combined)
-        hidden2 = self.layer_norm1(hidden2)
-        hidden2 = F.relu(hidden2)
-        logits = self.prediction_layer2(hidden2)
+        # 1. Embed Scalars
+        # input_features: (B, 4) -> (B, 1, 512)
+        scalar_token = self.extra_features_embedding(input_features).unsqueeze(1)
+        print(scalar_token.shape)
+        # 2. Embed Terrain
+        # elevation_data: (B, 768) -> (B, 768, 512)
+        elevation_tokens = self.pos_encoding(elevation_data)
+        print(elevation_tokens.shape)
+        # 3. Concatenate: [ScalarToken, Elev1, Elev2, ...]
+        # New shape: (B, 1 + 768, 512)
+        x = torch.cat([scalar_token, elevation_tokens], dim=1)
+        print(x.shape)
+        
+        # 4. Pass through Transformer
+        # All tokens interact. The scalar token "attends" to the terrain.
+        x = self.transformer(x)
+        print(x.shape)
+        # 5. Extract the first token (the updated Scalar Token)
+        # It now contains physics info + relevant terrain features
+        cls_token = x[:, 0, :] # (B, 512)
+        print(cls_token.shape)
+        
+        # 6. Predict
+        logits = self.head(cls_token) # (B, 1)
         return logits
 
 
