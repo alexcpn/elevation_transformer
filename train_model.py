@@ -1,44 +1,44 @@
 """
-Using torch.MultiHeadAttention instead of custom implementation
+Path loss transformer training script.
+Uses PathLossDataset with DataLoader for proper shuffling and masking.
+Only elevation data is normalized.
 """
 
-# !pip install datasets
-# !pip install --upgrade sentencepiece
-
-# configure logging
-import torch.nn.functional as F
-import torch.nn as nn
 import torch
-import sentencepiece as spm
-from datasets import load_dataset
-import math
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 import logging as log
 import os
-import gc
-import pandas as pd
 import glob
+import math
+import json
+import time
 from datetime import datetime
-from torch.nn.utils.rnn import pad_sequence
-from pathloss_transformer import create_model, process_batch, TARGET_MEAN, TARGET_STD, load_weights
+from torch.utils.data import DataLoader
+
+from pathloss_transformer import create_model, load_weights
+from dataset import PathLossDataset
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 # Set to None to train from scratch, or path to weights file to resume
-RESUME_FROM_WEIGHTS = "./weights/model_weights20260122140404.pth"  # Set to None to start fresh
-RESUME_FROM_WEIGHTS = "./weights/model_weights20260122182246.pth"
-# High loss threshold for diagnostic logging
-HIGH_LOSS_THRESHOLD = 0.5  # Log batches with loss above this value
+RESUME_FROM_WEIGHTS = None
 
 # Weighted loss: upweight hard examples
-USE_WEIGHTED_LOSS = True  # Set to False for standard loss
-WEIGHT_SCALE = 1.0  # How much to scale weights (higher = more focus on hard examples)
+USE_WEIGHTED_LOSS = False  # Disabled - was causing loss spikes
+WEIGHT_SCALE = 0.3
 
-datetimesatmp = datetime.now().strftime("%Y%m%d%H%M%S")
+BATCH_SIZE = 64
+NUM_EPOCHS = 1
+LEARNING_RATE = 1e-4
+NUM_WORKERS = 4
 
-outfile = f"./logs/pl_{datetimesatmp}_.log"
+datetimestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
+outfile = f"./logs/pl_{datetimestamp}_.log"
 log.basicConfig(level=log.INFO,
                 format='%(asctime)s - %(message)s',
                 datefmt='%d-%b-%y %H:%M:%S',
@@ -53,62 +53,67 @@ log.basicConfig(level=log.INFO,
 torch.set_float32_matmul_precision('high')
 
 # Enable mixed precision training for memory efficiency
-USE_AMP = True  # Automatic Mixed Precision (fp16)
+USE_AMP = True
 
-loss_log_file_base = f"./logs/loss_log_{datetimesatmp}_.npy"
-loss_log_file = f"./logs/loss_log_{datetimesatmp}_.npy.npz"
-
-# Initialize loss log
+loss_log_file = f"./logs/loss_log_{datetimestamp}_.npy.npz"
 if not os.path.exists(loss_log_file):
     np.savez_compressed(loss_log_file, loss=np.array([]))
-    log.info(f"Created path loss file {loss_log_file}")
+    log.info(f"Created loss log file {loss_log_file}")
 
-# Load the small dataset for training our tiny language model
-# get the dataframe in batches
-def batch_loader(parquet_files,batch_size):
+# create the necessary directories if they do not exist
+os.makedirs("logs", exist_ok=True)
+os.makedirs("weights", exist_ok=True)
 
-      # 1) Compute total rows across all files
-    total_rows = 0
-    for file in parquet_files:
-        tmp = pd.read_parquet(file, engine='pyarrow', columns=['path_loss'])
-        total_rows += len(tmp)
-    num_steps = math.ceil(total_rows / batch_size)
-    log.info(f"Total Steps = {num_steps}")
-    # dEP_FSRx_m  center_freq  receiver_ht_m  accesspoint_ht_m  elevation_data   path_loss
-    # Iterate in increments of `batch_size`.
-    # The last chunk may be smaller than `batch_size`, but it will still be yielded.
-    steps =0
-    for start_idx in range(0, len(parquet_files), batch_size):
-        # Slice out the chunk of files for this batch
-        chunk_files = parquet_files[start_idx:start_idx + batch_size]
-        # Read and concatenate them
-        df_list = [pd.read_parquet(file, engine='pyarrow') for file in chunk_files]
-        df = pd.concat(df_list, ignore_index=True)
-       # Ensure we yield exactly `batch_size` rows per step
-        for row_start in range(0, len(df), batch_size):
-            batch_df = df.iloc[row_start:row_start + batch_size]  # Slice out the required batch
-            
-            if len(batch_df) == 0:  # If there are no more full batches left, stop
-                break
-            steps += 1
-            yield batch_df, steps, num_steps
+# ============================================================
+# DATA SETUP
+# ============================================================
 
+INPUT_DIR = "/data/itm_loss/"
+parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
+nfiles = len(parquet_files)
+log.info(f"Number of parquet files: {nfiles}")
 
-read_seq_length = 768
+# Train/val split by file
+train_ratio = 0.8
+split_idx = int(nfiles * train_ratio)
+parquet_files_train = parquet_files[:split_idx]
+parquet_files_valid = parquet_files[split_idx:]
+log.info(f"Train files: {len(parquet_files_train)}")
+log.info(f"Validation files: {len(parquet_files_valid)}")
 
-# Create model from shared definition
+# Create datasets
+log.info("Loading training data...")
+train_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_train)
+log.info(f"Training samples: {len(train_dataset)}")
+
+log.info("Loading validation data...")
+val_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_valid)
+log.info(f"Validation samples: {len(val_dataset)}")
+
+# Create data loaders
+# Note: For IterableDataset, shuffle must be False in DataLoader (shuffling is done internally)
+train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False,
+                          num_workers=NUM_WORKERS, pin_memory=True, drop_last=True)
+val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
+                        num_workers=NUM_WORKERS, pin_memory=True)
+
+try:
+    total_steps = len(train_loader)
+except:
+    # Fallback if __len__ is not available or reliable
+    total_steps = len(train_dataset) // BATCH_SIZE
+
+log.info(f"Total training steps per epoch (estimated): {total_steps}")
+
+# ============================================================
+# MODEL SETUP
+# ============================================================
+
 model = create_model()
-
-# Define the loss function
-loss_function = nn.SmoothL1Loss() # since we have just regression
-
-# SGD is unstable and hence we use this
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
-
-# Mixed precision scaler
+loss_function = nn.SmoothL1Loss()
+optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
 
-# Place all in GPU
 model.to('cuda')
 
 # Load pre-trained weights if specified
@@ -119,75 +124,39 @@ if RESUME_FROM_WEIGHTS and os.path.exists(RESUME_FROM_WEIGHTS):
 elif RESUME_FROM_WEIGHTS:
     log.warning(f"Weights file not found: {RESUME_FROM_WEIGHTS}. Training from scratch.")
 
-# Optimize model with torch.compile
-# Note: torch.compile can cause issues with MultiheadAttention backward pass
-# Use dynamic=True to handle varying batch sizes, or disable for training
-ENABLE_COMPILE = False  # Set to True to enable compilation (may cause stride errors)
+log.info("Running without torch.compile (more stable for training).")
 
-if ENABLE_COMPILE and hasattr(torch, 'compile'):
-    log.info("Compiling model with torch.compile (dynamic=True)...")
-    # dynamic=True helps with varying tensor shapes
-    # fullgraph=False allows graph breaks which improves compatibility
-    model = torch.compile(model, dynamic=True, fullgraph=False)
-else:
-    log.info("Running without torch.compile (more stable for training).")
+# ============================================================
+# TRAINING
+# ============================================================
 
-# NO NEED TO EXECUTE THIS AGAIN ( this need A100, )
 log.info("Training model...")
-
-BATCH_SIZE = 64  # Reduced for memory without torch.compile. With AMP (fp16), can try 96-128. 
-model.train()
 loss_value_list = []
 
-# Define the folder containing Parquet files
-INPUT_DIR = "itm_loss"
-# Get a list of all Parquet files in the folder (sorted for consistency)
-parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
-nfiles = len(parquet_files)
-print(f"Number of parquet_files= {nfiles}")
-# Compute split index
-train_ratio=0.8
-split_idx = int(nfiles * train_ratio)
-parquet_files_train= parquet_files[:split_idx] 
-parquet_files_valid= parquet_files[split_idx:] 
-print(f"Train files= {len(parquet_files_train)}")
-print(f"Validation files= {len(parquet_files_valid)}")
-
-
-for epoch in range(1):
+for epoch in range(NUM_EPOCHS):
     model.train()
     epoch_loss = 0.0
     num_batches = 0
-    for df,step,total_steps in batch_loader(parquet_files_train, BATCH_SIZE):
-        dEP_FSRx_m = df['dEP_FSRx_m'] # this will have BATCH_SIZE rows of floats
-        center_freq = df['center_freq']
-        receiver_ht_m = df['receiver_ht_m']
-        accesspoint_ht_m = df['accesspoint_ht_m']
-        elevation_data  = df['elevation_data'] # this is a list of max read_seq_length(765)
-        path_loss = df['path_loss'] #this is the target label
-        input_features, elevation_data, path_loss = process_batch(df,read_seq_length)
-  
+
+    for step, (features, elevation, targets, mask) in enumerate(train_loader, 1):
         # Move to GPU
-        input_features = input_features.to('cuda')
-        elevation_data = elevation_data.to('cuda')
-        target_labels = path_loss.to('cuda')
+        features = features.cuda(non_blocking=True)
+        elevation = elevation.cuda(non_blocking=True)
+        targets = targets.cuda(non_blocking=True)
+        mask = mask.cuda(non_blocking=True)
 
         # Mixed precision forward pass
         with torch.amp.autocast('cuda', enabled=USE_AMP):
-            logits = model(input_features, elevation_data)
-            preds = logits.squeeze(1)
+            preds = model(features, elevation, mask=mask)
 
             if USE_WEIGHTED_LOSS:
-                # Weighted loss: harder examples get higher weight
                 with torch.no_grad():
-                    errors = torch.abs(preds - target_labels)
-                    # Weight = 1 + scaled error (clamped to avoid extreme weights)
-                    weights = 1.0 + WEIGHT_SCALE * torch.clamp(errors, 0, 3)
-                # Compute per-sample loss and apply weights
-                per_sample_loss = F.smooth_l1_loss(preds, target_labels, reduction='none')
+                    errors = torch.abs(preds - targets)
+                    weights = 1.0 + WEIGHT_SCALE * torch.clamp(errors, 0, 30)
+                per_sample_loss = F.smooth_l1_loss(preds, targets, reduction='none')
                 loss = (weights * per_sample_loss).mean()
             else:
-                loss = loss_function(preds, target_labels)
+                loss = loss_function(preds, targets)
 
         optimizer.zero_grad()
 
@@ -205,153 +174,103 @@ for epoch in range(1):
         epoch_loss += loss.item()
         num_batches += 1
 
-        # Diagnostic logging for high-loss batches
-        if loss.item() > HIGH_LOSS_THRESHOLD:
-            log.warning(f"HIGH LOSS batch at step {step}: loss={loss.item():.4f}")
-            log.warning(f"  Distance (m): min={df['dEP_FSRx_m'].min():.0f}, max={df['dEP_FSRx_m'].max():.0f}, mean={df['dEP_FSRx_m'].mean():.0f}")
-            log.warning(f"  Path loss (dB): min={df['path_loss'].min():.1f}, max={df['path_loss'].max():.1f}, mean={df['path_loss'].mean():.1f}")
-            log.warning(f"  Frequency (MHz): min={df['center_freq'].min():.0f}, max={df['center_freq'].max():.0f}")
-            log.warning(f"  RX height (m): min={df['receiver_ht_m'].min():.1f}, max={df['receiver_ht_m'].max():.1f}")
-            log.warning(f"  TX height (m): min={df['accesspoint_ht_m'].min():.1f}, max={df['accesspoint_ht_m'].max():.1f}")
-            # Log prediction vs target for worst samples in batch
-            with torch.no_grad():
-                preds = logits.squeeze(1).cpu().numpy()
-                targets = target_labels.cpu().numpy()
-                errors = np.abs(preds - targets)
-                worst_idx = np.argsort(errors)[-3:]  # Top 3 worst
-                log.warning(f"  Worst predictions (normalized): pred={preds[worst_idx]}, target={targets[worst_idx]}, error={errors[worst_idx]}")
-                # Denormalize for interpretability
-                preds_db = preds[worst_idx] * TARGET_STD + TARGET_MEAN
-                targets_db = targets[worst_idx] * TARGET_STD + TARGET_MEAN
-                log.warning(f"  Worst predictions (dB): pred={preds_db}, target={targets_db}")
-
+       
         if epoch == 0 and step == 1:
-            log.info(f"Input Features Shape: {input_features.shape}")  # Expected: (BATCH_SIZE, 4)
-            log.info(f"Elevation Data Shape: {elevation_data.shape}")  # Expected: (BATCH_SIZE, read_seq_length)
-            log.info(f"Path Loss Shape: {path_loss.shape}")  # Expected: (BATCH_SIZE,)
-            log.info(f"logits.shape {logits.shape}")
-        # print training progress occasionally
+            log.info(f"Features shape: {features.shape}")
+            log.info(f"Elevation shape: {elevation.shape}")
+            log.info(f"Targets shape: {targets.shape}")
+            log.info(f"Mask shape: {mask.shape}")
+            log.info(f"Preds shape: {preds.shape}")
+
         loss_value_list.append((epoch, step, loss.item()))
         if step % 100 == 0:
             log.info("[Epoch=%d | Step=%d/%d] loss=%.4f",
-                     epoch+1, step, total_steps,loss.item())
-            data = np.load(loss_log_file,allow_pickle=True)
-            loss_history = []
-            if "loss" in data:
-                # Convert to list for appending
-                loss_history = data["loss"].tolist()
+                     epoch+1, step, total_steps, loss.item())
+            # Save loss log
+            data = np.load(loss_log_file, allow_pickle=True)
+            loss_history = data["loss"].tolist() if "loss" in data else []
             loss_list = loss_history + loss_value_list
-            np.savez_compressed(
-                loss_log_file, loss=np.array(loss_list, dtype=object))
+            np.savez_compressed(loss_log_file, loss=np.array(loss_list, dtype=object))
             loss_value_list = []
-        del  input_features,elevation_data,target_labels 
-        gc.collect()
-        torch.cuda.empty_cache()
+
     avg_epoch_loss = epoch_loss / num_batches
     log.info("---------Epoch %02d | Average Loss: %.4f", epoch+1, avg_epoch_loss)
-    # do a validation loss
+
+    # ============================================================
+    # VALIDATION
+    # ============================================================
 
     model.eval()
-    validation_loss = 0
+    validation_loss = 0.0
     num_valid_batches = 0
-    overestimation_count = 0 # like false positive
-    underestimation_count = 0 # like false negative
+    overestimation_count = 0
+    underestimation_count = 0
+
     with torch.no_grad():
-        for df,step,total_steps in batch_loader(parquet_files_valid, BATCH_SIZE):
-            dEP_FSRx_m = df['dEP_FSRx_m'] # this will have BATCH_SIZE rows of floats
-            center_freq = df['center_freq']
-            receiver_ht_m = df['receiver_ht_m']
-            accesspoint_ht_m = df['accesspoint_ht_m']
-            elevation_data  = df['elevation_data'] # this is a list of max read_seq_length(765)
-            path_loss = df['path_loss'] #this is the target label
-            input_features, elevation_data, path_loss = process_batch(df,read_seq_length)
+        for features, elevation, targets, mask in val_loader:
+            features = features.cuda(non_blocking=True)
+            elevation = elevation.cuda(non_blocking=True)
+            targets = targets.cuda(non_blocking=True)
+            mask = mask.cuda(non_blocking=True)
 
-            # Move to GPU
-            input_features = input_features.to('cuda')
-            elevation_data = elevation_data.to('cuda')
-            target_labels = path_loss.to('cuda')
-
-            # Mixed precision inference
             with torch.amp.autocast('cuda', enabled=USE_AMP):
-                logits = model(input_features, elevation_data)
-                loss = loss_function(logits.squeeze(1), target_labels)
+                preds = model(features, elevation, mask=mask)
+                loss = loss_function(preds, targets)
 
             num_valid_batches += 1
             validation_loss += loss.item()
-            # Calculate overestimation and underestimation counts
-            predictions = logits.squeeze(1).float().cpu().detach().numpy()  # .float() to ensure fp32 for numpy
-            targets = target_labels.cpu().detach().numpy()
-            diff = predictions - targets
-            overestimation_count += np.sum(diff > 0.2)
-            underestimation_count += np.sum(diff < 0.2)
+
+            preds_np = preds.float().cpu().numpy()
+            targets_np = targets.cpu().numpy()
+            diff = preds_np - targets_np
+            overestimation_count += np.sum(diff > 3.0)   # 3 dB threshold
+            underestimation_count += np.sum(diff < -3.0)
+
     avg_valid_loss = validation_loss / num_valid_batches
-    
-    log.info("---------Epoch %02d | Average Validation : %.4f", epoch+1, avg_valid_loss)
-    log.info(f"---------Epoch %02d | Overestimation Count (like False Positive): {overestimation_count}", epoch+1)
-    log.info(f"---------Epoch %02d | Underestimation Count (like False Negative): {underestimation_count}", epoch+1)
+    log.info("---------Epoch %02d | Average Validation: %.4f", epoch+1, avg_valid_loss)
+    log.info(f"---------Epoch {epoch+1:02d} | Overestimation (>3dB): {overestimation_count}")
+    log.info(f"---------Epoch {epoch+1:02d} | Underestimation (<-3dB): {underestimation_count}")
 
-"""# Use the trained model to predict"""
+# ============================================================
+# SAVE MODEL
+# ============================================================
 
-# save the model weights
-save_path = f"./weights/model_weights{datetimesatmp}.pth"
+save_path = f"./weights/model_weights{datetimestamp}.pth"
 torch.save(model.state_dict(), save_path)
 log.info(f"Model weights saved at {save_path}")
-
 log.info("Training Over")
 
 # ============================================================
-# BENCHMARKING SECTION - For White Paper Metrics
+# BENCHMARKING SECTION
 # ============================================================
 log.info("=" * 60)
-log.info("BENCHMARKING - Computing metrics for white paper")
+log.info("BENCHMARKING - Computing metrics")
 log.info("=" * 60)
 
-
 model.eval()
-all_predictions = []
-all_targets = []
 all_predictions_db = []
 all_targets_db = []
 
-# Collect predictions on validation set
 log.info("Computing accuracy metrics on validation set...")
 with torch.no_grad():
-    for df, step, total_steps in batch_loader(parquet_files_valid, BATCH_SIZE):
-        input_features, elevation_data, path_loss = process_batch(df, read_seq_length)
+    for features, elevation, targets, mask in val_loader:
+        features = features.cuda(non_blocking=True)
+        elevation = elevation.cuda(non_blocking=True)
+        mask = mask.cuda(non_blocking=True)
 
-        input_features = input_features.to('cuda')
-        elevation_data = elevation_data.to('cuda')
-        target_labels = path_loss.to('cuda')
+        with torch.amp.autocast('cuda', enabled=USE_AMP):
+            preds = model(features, elevation, mask=mask)
 
-        logits = model(input_features, elevation_data)
+        # Predictions and targets are already in dB
+        all_predictions_db.extend(preds.float().cpu().numpy())
+        all_targets_db.extend(targets.numpy())
 
-        # Store normalized predictions and targets
-        preds_norm = logits.squeeze(1).cpu().numpy()
-        targets_norm = target_labels.cpu().numpy()
-
-        all_predictions.extend(preds_norm)
-        all_targets.extend(targets_norm)
-
-        # Denormalize to dB for real-world metrics
-        preds_db = preds_norm * TARGET_STD + TARGET_MEAN
-        targets_db = targets_norm * TARGET_STD + TARGET_MEAN
-
-        all_predictions_db.extend(preds_db)
-        all_targets_db.extend(targets_db)
-
-all_predictions = np.array(all_predictions)
-all_targets = np.array(all_targets)
 all_predictions_db = np.array(all_predictions_db)
 all_targets_db = np.array(all_targets_db)
-
-# Compute accuracy metrics
-rmse_normalized = np.sqrt(np.mean((all_predictions - all_targets) ** 2))
-mae_normalized = np.mean(np.abs(all_predictions - all_targets))
 
 rmse_db = np.sqrt(np.mean((all_predictions_db - all_targets_db) ** 2))
 mae_db = np.mean(np.abs(all_predictions_db - all_targets_db))
 
-# Percentile errors
 errors_db = np.abs(all_predictions_db - all_targets_db)
 p50_error = np.percentile(errors_db, 50)
 p90_error = np.percentile(errors_db, 90)
@@ -361,8 +280,6 @@ log.info("-" * 40)
 log.info("ACCURACY METRICS (on validation set)")
 log.info("-" * 40)
 log.info(f"  Samples evaluated: {len(all_predictions_db)}")
-log.info(f"  RMSE (normalized): {rmse_normalized:.4f}")
-log.info(f"  MAE (normalized):  {mae_normalized:.4f}")
 log.info(f"  RMSE (dB):         {rmse_db:.2f} dB")
 log.info(f"  MAE (dB):          {mae_db:.2f} dB")
 log.info(f"  Median error:      {p50_error:.2f} dB")
@@ -374,26 +291,16 @@ log.info("-" * 40)
 log.info("SPEED BENCHMARK")
 log.info("-" * 40)
 
-import time
-
-# Prepare a batch for timing
-sample_df = next(batch_loader(parquet_files_valid, BATCH_SIZE))[0]
-input_features, elevation_data, path_loss = process_batch(sample_df, read_seq_length)
-input_features = input_features.to('cuda')
-elevation_data = elevation_data.to('cuda')
-
-# Optionally compile model for inference benchmarking (more stable than during training)
-if hasattr(torch, 'compile') and not ENABLE_COMPILE:
-    log.info("Compiling model for inference benchmark...")
-    try:
-        model = torch.compile(model, dynamic=True, fullgraph=False)
-    except Exception as e:
-        log.warning(f"torch.compile failed for inference: {e}")
+# Get a sample batch for timing
+sample_batch = next(iter(val_loader))
+sample_features = sample_batch[0].cuda()
+sample_elevation = sample_batch[1].cuda()
+sample_mask = sample_batch[3].cuda()
 
 # Warm-up GPU
 with torch.no_grad():
     for _ in range(10):
-        logits = model(input_features, elevation_data)
+        _ = model(sample_features, sample_elevation, mask=sample_mask)
 
 # Time model inference
 torch.cuda.synchronize()
@@ -401,7 +308,7 @@ num_runs = 100
 start_time = time.time()
 with torch.no_grad():
     for _ in range(num_runs):
-        logits = model(input_features, elevation_data)
+        _ = model(sample_features, sample_elevation, mask=sample_mask)
         torch.cuda.synchronize()
 end_time = time.time()
 
@@ -414,21 +321,21 @@ log.info(f"  Batch size: {BATCH_SIZE}")
 log.info(f"  Runs: {num_runs}")
 log.info(f"  Total time: {total_time:.3f} s")
 log.info(f"  Time per batch: {time_per_batch*1000:.2f} ms")
-log.info(f"  Time per sample: {time_per_sample_us:.1f} µs")
+log.info(f"  Time per sample: {time_per_sample_us:.1f} us")
 log.info(f"  Throughput: {samples_per_second:.0f} samples/second")
 
-# Summary for white paper
+# Summary
 log.info("=" * 60)
-log.info("SUMMARY FOR WHITE PAPER")
+log.info("SUMMARY")
 log.info("=" * 60)
-log.info(f"  Dataset: {nfiles} terrain profiles")
+log.info(f"  Dataset: {nfiles} parquet files")
 log.info(f"  Train/Val split: {len(parquet_files_train)}/{len(parquet_files_valid)}")
 log.info(f"  Model accuracy: RMSE = {rmse_db:.2f} dB, MAE = {mae_db:.2f} dB")
 log.info(f"  Inference speed: {samples_per_second:.0f} predictions/second")
-log.info(f"  Time per prediction: {time_per_sample_us:.1f} µs")
+log.info(f"  Time per prediction: {time_per_sample_us:.1f} us")
 log.info("=" * 60)
 
-# Save benchmark results to file
+# Save benchmark results
 benchmark_results = {
     "dataset_size": nfiles,
     "train_files": len(parquet_files_train),
@@ -444,8 +351,7 @@ benchmark_results = {
     "batch_size": BATCH_SIZE,
 }
 
-import json
-benchmark_file = f"./logs/benchmark_{datetimesatmp}.json"
+benchmark_file = f"./logs/benchmark_{datetimestamp}.json"
 with open(benchmark_file, "w") as f:
     json.dump(benchmark_results, f, indent=2)
 log.info(f"Benchmark results saved to {benchmark_file}")

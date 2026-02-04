@@ -14,7 +14,7 @@ from dataset import PathLossDataset
 
 
 # Define the folder containing Parquet files
-INPUT_DIR = "./itm_loss"
+INPUT_DIR = "./itm_loss_test"
 # Get a list of all Parquet files in the folder (sorted for consistency)
 parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
 parquet_files = parquet_files[:10]  # Limit to 10 files for testing
@@ -24,7 +24,7 @@ print(f"Number of parquet_files= {nfiles}")
 train_ratio=0.8
 BATCH_SIZE = 25  # 5 GB for 
 
-dataset = PathLossDataset(parquet_files)
+dataset = PathLossDataset(INPUT_DIR)
 dataset_len = len(dataset)
 train_ratio = 0.8
 train_len = int(dataset_len * train_ratio)
@@ -52,12 +52,12 @@ print(f"Val loader length: {len(val_loader)}")
 # Test the DataLoader
 for i, (input_features, elevation_data, path_loss,_) in enumerate(train_loader):
     print(f"Batch {i}: Extra features shape: {input_features.shape}, Elevation data shape: {elevation_data.shape}, Path loss shape: {path_loss.shape}")
-    input_features =(input_features - input_features.mean(dim=1, keepdim=True)) / (input_features.std(dim=1, keepdim=True) + 1e-6)
-    elevation_data = (elevation_data - elevation_data.mean(dim=1, keepdim=True)) / (elevation_data.std(dim=1, keepdim=True) + 1e-6)
-    path_loss = (path_loss - path_loss.mean()) / (path_loss.std() + 1e-6)
-        
-    print(f"Extra features: {input_features[:1]}")
-    #print(f"Elevation data: {elevation_data[:1]}")
+    print(f"Extra features: {input_features[0]}")
+    print(f"Elevation data: {elevation_data[0]}")
+    #print elevation data lenght where value != 0
+    # Length of non-zero elements in the first sample of the batch
+    non_zero_len = (elevation_data[0] > 0).sum().item()
+    print(f"Elevation data length where value != 0: {non_zero_len}")
     print(f"Path loss: {path_loss}")
     if i == 2:
         break

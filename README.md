@@ -475,20 +475,6 @@ Target (Path Loss):
 
 For reproducibility, the following normalization constants were computed from the training set:
 
-```python
-# Target normalization
-TARGET_MEAN = 218.0  # dB
-TARGET_STD = 31.0    # dB
-
-# Feature normalization
-FEAT_MEAN = [135920.0, 6300.0, 41.0, 89.0]  # [distance_m, freq_MHz, rx_ht_m, tx_ht_m]
-FEAT_STD = [46380.0, 100.0, 150.0, 35.0]
-
-# Elevation normalization
-ELEV_MEAN = 805.0  # m
-ELEV_STD = 736.0   # m
-```
-
 All inputs are normalized as: $\hat{x} = (x - \mu) / \sigma$
 
 Outputs are denormalized as: $y = \hat{y} \cdot \sigma + \mu$
