@@ -17,6 +17,7 @@ import time
 import random
 from datetime import datetime
 from torch.utils.data import DataLoader
+from itertools import chain
 
 from pathloss_transformer import create_model, load_weights
 from pathloss_dataset import PathLossDataset
@@ -26,16 +27,19 @@ from pathloss_dataset import PathLossDataset
 # ============================================================
 
 # Set to None to train from scratch, or path to weights file to resume
-RESUME_FROM_WEIGHTS = None
+RESUME_FROM_WEIGHTS = "weights/model_weights20260204165247.pth"
 
 # Weighted loss: upweight hard examples
 USE_WEIGHTED_LOSS = False  # Disabled - was causing loss spikes
 WEIGHT_SCALE = 0.3
 
-BATCH_SIZE = 64
+BATCH_SIZE = 64 # for a 6 GB GPU Mempory 64 batch size is fine; Increase it if you have more GPU memory (e.g. 128 for 24 GB GPU), or decrease if you have less memory (e.g. 32 for 4 GB GPU)
 NUM_EPOCHS = 1
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 4
+DROP_LAST = True  # Set False to allow a smaller final batch
+LIMIT_TRAIN_SAMPLES = 1000  # Set to None for full training, or a number to limit samples
+LIMIT_VAL_SAMPLES = 250000  # Set to None for full validation, or a number to limit (~1% of full dataset)
 
 datetimestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -65,47 +69,99 @@ if not os.path.exists(loss_log_file):
 os.makedirs("logs", exist_ok=True)
 os.makedirs("weights", exist_ok=True)
 
+
+def validate_model(model, val_loader, loss_function, USE_AMP, limit_batches=None):
+    model.eval()
+    validation_loss = 0.0
+    num_valid_batches = 0
+    total_val_samples = 0
+    overestimation_count = 0
+    underestimation_count = 0
+
+    with torch.no_grad():
+        for features, elevation, targets, mask in val_loader:
+            features = features.cuda(non_blocking=True)
+            elevation = elevation.cuda(non_blocking=True)
+            targets = targets.cuda(non_blocking=True)
+            mask = mask.cuda(non_blocking=True)
+
+            with torch.amp.autocast('cuda', enabled=USE_AMP):
+                preds = model(features, elevation, mask=mask)
+                loss = loss_function(preds, targets)
+
+            num_valid_batches += 1
+            validation_loss += loss.item()
+            total_val_samples += targets.size(0)
+
+            preds_np = preds.float().cpu().numpy()
+            targets_np = targets.cpu().numpy()
+            diff = preds_np - targets_np
+            overestimation_count += np.sum(diff > 3.0)   # 3 dB threshold
+            underestimation_count += np.sum(diff < -3.0)
+
+            if limit_batches is not None and num_valid_batches >= limit_batches:
+                break
+
+    avg_valid_loss = validation_loss / num_valid_batches if num_valid_batches > 0 else 0.0
+
+    return avg_valid_loss, overestimation_count, underestimation_count,total_val_samples
+
 # ============================================================
 # DATA SETUP
 # ============================================================
 
-INPUT_DIR = "/data/itm_loss/"
-parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
-random.seed(42)  # For reproducibility
-random.shuffle(parquet_files)  # Shuffle to ensure train/val have similar distributions
-nfiles = len(parquet_files)
-log.info(f"Number of parquet files: {nfiles}")
+# INPUT_DIR = "/data/itm_loss/"
+# parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
+# random.seed(42)  # For reproducibility
+# random.shuffle(parquet_files)  # Shuffle to ensure train/val have similar distributions
+# nfiles = len(parquet_files)
+# log.info(f"Number of parquet files: {nfiles}")
 
-# Train/val split by file
-train_ratio = 0.8
-split_idx = int(nfiles * train_ratio)
-parquet_files_train = parquet_files[:split_idx]
-parquet_files_valid = parquet_files[split_idx:]
-log.info(f"Train files: {len(parquet_files_train)}")
-log.info(f"Validation files: {len(parquet_files_valid)}")
+# # Train/val split by file
+# train_ratio = 0.8
+# split_idx = int(nfiles * train_ratio)
+# parquet_files_train = parquet_files[:split_idx]
+# parquet_files_valid = parquet_files[split_idx:]
+# log.info(f"Train files: {len(parquet_files_train)}")
+# log.info(f"Validation files: {len(parquet_files_valid)}")
 
-# Create datasets
-log.info("Loading training data...")
-train_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_train)
-log.info(f"Training samples: {len(train_dataset)}")
+# Create datasets from local parquet files
+# log.info("Loading training data...")
+# train_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_train)
+# log.info(f"Training samples: {len(train_dataset)}")
 
-log.info("Loading validation data...")
-val_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_valid)
-log.info(f"Validation samples: {len(val_dataset)}")
+# log.info("Loading validation data...")
+# val_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_valid)
+# log.info(f"Validation samples: {len(val_dataset)}")
+
+# Create datasets from Huggingface datasets
+train_dataset = PathLossDataset(None, split="train", max_samples=LIMIT_TRAIN_SAMPLES)
+val_dataset = PathLossDataset(None, split="val", max_samples=LIMIT_VAL_SAMPLES)
+
+# Helper for rebuilding loaders (useful for fallback if multi-worker streaming stalls)
+def build_train_loader(num_workers):
+    return DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False,
+                      num_workers=num_workers, pin_memory=True, drop_last=DROP_LAST)
 
 # Create data loaders
 # Note: For IterableDataset, shuffle must be False in DataLoader (shuffling is done internally)
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                          num_workers=NUM_WORKERS, pin_memory=True, drop_last=True)
+train_loader = build_train_loader(NUM_WORKERS)
 val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
                         num_workers=NUM_WORKERS, pin_memory=True)
 
-try:
-    total_steps = len(train_loader)
-except:
-    # Fallback if __len__ is not available or reliable
-    total_steps = len(train_dataset) // BATCH_SIZE
+# Calculate estimated steps from dataset stats
+estimated_samples = len(train_dataset)
+if LIMIT_TRAIN_SAMPLES is not None:
+    estimated_samples = min(estimated_samples, LIMIT_TRAIN_SAMPLES)
+if DROP_LAST:
+    total_steps = estimated_samples // BATCH_SIZE
+else:
+    total_steps = math.ceil(estimated_samples / BATCH_SIZE)
+if total_steps == 0:
+    log.warning("Estimated steps per epoch is 0. Check BATCH_SIZE (%d), LIMIT_TRAIN_SAMPLES (%s), and DROP_LAST.",
+                BATCH_SIZE, LIMIT_TRAIN_SAMPLES)
 
+log.info(f"Estimated training samples: {estimated_samples}")
 log.info(f"Total training steps per epoch (estimated): {total_steps}")
 
 # ============================================================
@@ -127,6 +183,7 @@ if RESUME_FROM_WEIGHTS and os.path.exists(RESUME_FROM_WEIGHTS):
 elif RESUME_FROM_WEIGHTS:
     log.warning(f"Weights file not found: {RESUME_FROM_WEIGHTS}. Training from scratch.")
 
+#orch.compile()
 log.info("Running without torch.compile (more stable for training).")
 
 # ============================================================
@@ -135,13 +192,29 @@ log.info("Running without torch.compile (more stable for training).")
 
 log.info("Training model...")
 loss_value_list = []
+def iter_train_batches(loader):
+    train_iter = iter(loader)
+    first_batch = next(train_iter, None)
+    if first_batch is None:
+        return None
+    return chain([first_batch], train_iter)
 
 for epoch in range(NUM_EPOCHS):
     model.train()
     epoch_loss = 0.0
     num_batches = 0
 
-    for step, (features, elevation, targets, mask) in enumerate(train_loader, 1):
+    train_iter = iter_train_batches(train_loader)
+    if train_iter is None and train_loader.num_workers > 0:
+        log.warning("Train loader produced 0 batches with num_workers=%d. Retrying with num_workers=0.",
+                    train_loader.num_workers)
+        train_loader = build_train_loader(0)
+        train_iter = iter_train_batches(train_loader)
+    if train_iter is None:
+        log.error("Train loader is empty. Check dataset availability, split, LIMIT_TRAIN_SAMPLES, and DROP_LAST.")
+        break
+
+    for step, (features, elevation, targets, mask) in enumerate(train_iter, 1):
         # Move to GPU
         features = features.cuda(non_blocking=True)
         elevation = elevation.cuda(non_blocking=True)
@@ -169,7 +242,7 @@ for epoch in range(NUM_EPOCHS):
         epoch_loss += loss.item()
         num_batches += 1
 
-       
+        print(f"step {step}/{total_steps} - loss: {loss.item():.4f}")
         if epoch == 0 and step == 1:
             log.info(f"Features shape: {features.shape}")
             log.info(f"Elevation shape: {elevation.shape}")
@@ -178,57 +251,45 @@ for epoch in range(NUM_EPOCHS):
             log.info(f"Preds shape: {preds.shape}")
 
         loss_value_list.append((epoch, step, loss.item()))
-        if step % 100 == 0:
-            log.info("[Epoch=%d | Step=%d/%d] loss=%.4f",
-                     epoch+1, step, total_steps, loss.item())
+        if step % 10 == 0:
+            total_samples_processed = num_batches * BATCH_SIZE
+            log.info("[Epoch=%d | Step=%d/%d | Samples=%d] loss=%.4f",
+                     epoch+1, step, total_steps, total_samples_processed, loss.item())
             # Save loss log
             data = np.load(loss_log_file, allow_pickle=True)
             loss_history = data["loss"].tolist() if "loss" in data else []
             loss_list = loss_history + loss_value_list
             np.savez_compressed(loss_log_file, loss=np.array(loss_list, dtype=object))
             loss_value_list = []
+            avg_epoch_loss = epoch_loss / num_batches
+            log.info("---------Epoch %02d | Training samples: %d | Average Loss: %.4f", epoch+1, total_samples_processed, avg_epoch_loss)
+        
 
-    avg_epoch_loss = epoch_loss / num_batches
-    log.info("---------Epoch %02d | Average Loss: %.4f", epoch+1, avg_epoch_loss)
+        if step % 500 == 0:
+            avg_valid_loss, overestimation_count, underestimation_count, total_val_samples = validate_model(
+                model, val_loader, loss_function, USE_AMP, limit_batches=5
+            )
+            log.info("Epoch=%d | Step=%d/%d |---Validation | Validation samples: %d", epoch+1, step, total_val_samples)
+            log.info("---------Validation | Average Validation: %.4f", avg_valid_loss)
+            log.info(f"---------Validation | Overestimation (>3dB): {overestimation_count}")
+            log.info(f"---------Validation | Underestimation (<-3dB): {underestimation_count}")
 
-    # ============================================================
-    # VALIDATION
-    # ============================================================
-
-    model.eval()
-    validation_loss = 0.0
-    num_valid_batches = 0
-    overestimation_count = 0
-    underestimation_count = 0
-
-    with torch.no_grad():
-        for features, elevation, targets, mask in val_loader:
-            features = features.cuda(non_blocking=True)
-            elevation = elevation.cuda(non_blocking=True)
-            targets = targets.cuda(non_blocking=True)
-            mask = mask.cuda(non_blocking=True)
-
-            with torch.amp.autocast('cuda', enabled=USE_AMP):
-                preds = model(features, elevation, mask=mask)
-                loss = loss_function(preds, targets)
-
-            num_valid_batches += 1
-            validation_loss += loss.item()
-
-            preds_np = preds.float().cpu().numpy()
-            targets_np = targets.cpu().numpy()
-            diff = preds_np - targets_np
-            overestimation_count += np.sum(diff > 3.0)   # 3 dB threshold
-            underestimation_count += np.sum(diff < -3.0)
-
-    avg_valid_loss = validation_loss / num_valid_batches
-    log.info("---------Epoch %02d | Average Validation: %.4f", epoch+1, avg_valid_loss)
-    log.info(f"---------Epoch {epoch+1:02d} | Overestimation (>3dB): {overestimation_count}")
-    log.info(f"---------Epoch {epoch+1:02d} | Underestimation (<-3dB): {underestimation_count}")
-
+        # Check if we've hit the sample limit
+        if LIMIT_TRAIN_SAMPLES is not None and num_batches * BATCH_SIZE >= LIMIT_TRAIN_SAMPLES:
+            log.info(f"Reached training sample limit ({LIMIT_TRAIN_SAMPLES}), stopping epoch early.")
+            break
+    log.info(f"Epoch {epoch+1} completed. Average Training Loss: {epoch_loss / num_batches:.4f}")
+ 
+log.info("Training completed. Starting final validation...")
 # ============================================================
-# SAVE MODEL
-# ============================================================
+avg_valid_loss, overestimation_count, underestimation_count, total_val_samples = validate_model(
+    model, val_loader, loss_function, USE_AMP, limit_batches=None
+)
+log.info("Validation | Validation samples: %d", total_val_samples)
+log.info("Validation | Average Validation: %.4f", avg_valid_loss)
+log.info(f"Validation | Overestimation (>3dB): {overestimation_count}")
+log.info(f"Validation | Underestimation (<-3dB): {underestimation_count}")
+
 
 save_path = f"./weights/model_weights{datetimestamp}.pth"
 torch.save(model.state_dict(), save_path)
@@ -280,69 +341,31 @@ log.info(f"  MAE (dB):          {mae_db:.2f} dB")
 log.info(f"  Median error:      {p50_error:.2f} dB")
 log.info(f"  90th percentile:   {p90_error:.2f} dB")
 log.info(f"  95th percentile:   {p95_error:.2f} dB")
+# (Speed benchmark code removed; see benchmark_model.py)
 
-# Speed benchmark
-log.info("-" * 40)
-log.info("SPEED BENCHMARK")
-log.info("-" * 40)
-
-# Get a sample batch for timing
-sample_batch = next(iter(val_loader))
-sample_features = sample_batch[0].cuda()
-sample_elevation = sample_batch[1].cuda()
-sample_mask = sample_batch[3].cuda()
-
-# Warm-up GPU
-with torch.no_grad():
-    for _ in range(10):
-        _ = model(sample_features, sample_elevation, mask=sample_mask)
-
-# Time model inference
-torch.cuda.synchronize()
-num_runs = 100
-start_time = time.time()
-with torch.no_grad():
-    for _ in range(num_runs):
-        _ = model(sample_features, sample_elevation, mask=sample_mask)
-        torch.cuda.synchronize()
-end_time = time.time()
-
-total_time = end_time - start_time
-time_per_batch = total_time / num_runs
-samples_per_second = (BATCH_SIZE * num_runs) / total_time
-time_per_sample_us = (total_time / (BATCH_SIZE * num_runs)) * 1e6
-
-log.info(f"  Batch size: {BATCH_SIZE}")
-log.info(f"  Runs: {num_runs}")
-log.info(f"  Total time: {total_time:.3f} s")
-log.info(f"  Time per batch: {time_per_batch*1000:.2f} ms")
-log.info(f"  Time per sample: {time_per_sample_us:.1f} us")
-log.info(f"  Throughput: {samples_per_second:.0f} samples/second")
 
 # Summary
 log.info("=" * 60)
 log.info("SUMMARY")
 log.info("=" * 60)
-log.info(f"  Dataset: {nfiles} parquet files")
-log.info(f"  Train/Val split: {len(parquet_files_train)}/{len(parquet_files_valid)}")
+log.info(f"  Dataset: {getattr(train_dataset, 'n_files', 'N/A')} files (approx)")
+log.info(f"  Train/Val split: 80% / 10%")
 log.info(f"  Model accuracy: RMSE = {rmse_db:.2f} dB, MAE = {mae_db:.2f} dB")
-log.info(f"  Inference speed: {samples_per_second:.0f} predictions/second")
-log.info(f"  Time per prediction: {time_per_sample_us:.1f} us")
+
 log.info("=" * 60)
 
 # Save benchmark results
 benchmark_results = {
-    "dataset_size": nfiles,
-    "train_files": len(parquet_files_train),
-    "val_files": len(parquet_files_valid),
+    "dataset_size": getattr(train_dataset, 'n_files', 'N/A'),
+    "train_files": "80%",
+    "val_files": "10%",
     "val_samples": len(all_predictions_db),
     "rmse_db": float(rmse_db),
     "mae_db": float(mae_db),
     "median_error_db": float(p50_error),
     "p90_error_db": float(p90_error),
     "p95_error_db": float(p95_error),
-    "samples_per_second": float(samples_per_second),
-    "time_per_sample_us": float(time_per_sample_us),
+
     "batch_size": BATCH_SIZE,
 }
 

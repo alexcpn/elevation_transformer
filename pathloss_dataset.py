@@ -9,7 +9,18 @@ from datasets import load_dataset #huggingface datasets
 from torch.utils.data import IterableDataset, get_worker_info
 
 class PathLossDataset(IterableDataset):
-    def __init__(self, parquet_dir, file_list=None, seq_length=750, split="train", max_samples=None):
+    def __init__(
+        self,
+        parquet_dir,
+        file_list=None,
+        seq_length=750,
+        split="train",
+        max_samples=None,
+        shuffle=True,
+        split_mod=100,
+        val_mods=(0,),
+        test_mods=(1,),
+    ):
         """
         Dataset that loads directly from parquet files using Hugging Face datasets in STREAMING mode.
         This avoids creating large cache files on disk.
@@ -38,17 +49,20 @@ class PathLossDataset(IterableDataset):
             full_ds = load_dataset("alexcpn/longely_rice_model", split="train", streaming=True)
             
             # Apply split using modular arithmetic on indices
-            # Train: indices where idx % 10 < 8  (80%)
-            # Val:   indices where idx % 10 == 8 (10%)
-            # Test:  indices where idx % 10 == 9 (10%)
+            # Default: 98% train / 1% val / 1% test (split_mod=100, val_mods=(0,), test_mods=(1,))
+            val_mods_set = set(val_mods)
+            test_mods_set = set(test_mods)
             if split == "train":
-                self.dataset = full_ds.filter(lambda x, idx: idx % 10 < 8, with_indices=True)
+                self.dataset = full_ds.filter(
+                    lambda x, idx: (idx % split_mod) not in val_mods_set and (idx % split_mod) not in test_mods_set,
+                    with_indices=True,
+                )
             elif split == "val":
-                self.dataset = full_ds.filter(lambda x, idx: idx % 10 == 8, with_indices=True)
+                self.dataset = full_ds.filter(lambda x, idx: (idx % split_mod) in val_mods_set, with_indices=True)
             else:  # test
-                self.dataset = full_ds.filter(lambda x, idx: idx % 10 == 9, with_indices=True)
+                self.dataset = full_ds.filter(lambda x, idx: (idx % split_mod) in test_mods_set, with_indices=True)
             
-            self.n_files = 1  # approximate
+            self.n_files = 4741  # approximate file count for full HF dataset (~26.7M samples)
         else:
             print(f"Loading parquet files from {parquet_dir}")   
             self.dataset = load_dataset("parquet", data_files=files, split="train", streaming=True)
@@ -59,9 +73,10 @@ class PathLossDataset(IterableDataset):
             self.dataset = self.dataset.take(max_samples)
             print(f"Limiting dataset to {max_samples} samples")
         
-        # Set a buffer size for shuffling. 
+        # Set a buffer size for shuffling.
         # This provides local randomness without loading the whole dataset.
         self.shuffle_buffer_size = 10000
+        self.shuffle = shuffle
 
     def __iter__(self):
         worker_info = get_worker_info()
@@ -73,17 +88,18 @@ class PathLossDataset(IterableDataset):
             # With Parquet files, it's generally efficient enough.
             ds = ds.shard(num_shards=worker_info.num_workers, index=worker_info.id)
         
-        # Apply shuffling (with a buffer)
+        # Apply shuffling (with a buffer) if enabled
         # We shuffle *after* sharding to ensure each worker shuffles its own stream
-        ds = ds.shuffle(buffer_size=self.shuffle_buffer_size, seed=42)
+        if self.shuffle:
+            ds = ds.shuffle(buffer_size=self.shuffle_buffer_size, seed=42)
         
         for row in ds:
             # Elevation: pad/truncate to seq_length, build mask
             elev = row['elevation_profile_m']
             
-            # Skip empty profiles and where it is not written properly; proper sequnces should have length
-            # 750 (seq_length)
-            if len(elev) < self.seq_length:
+            # Skip only truly empty profiles (Transformer yields NaN if mask is all True)
+            # Shorter profiles are OK - they get padded and masked
+            if len(elev) == 0:
                 continue
 
             elev_len = min(len(elev), self.seq_length)
@@ -127,4 +143,3 @@ class PathLossDataset(IterableDataset):
         # Based on previous logs: ~26.7M samples for 4741 files -> ~5650 samples/file
         estimated_samples = self.n_files * 5650
         return estimated_samples
-
