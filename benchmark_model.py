@@ -14,7 +14,7 @@ from datetime import datetime
 from pathloss_transformer import create_model, load_weights
 import random
 from torch.utils.data import DataLoader
-from dataset import PathLossDataset
+from pathloss_dataset import PathLossDataset
 
 # Configure logging
 log.basicConfig(level=log.INFO,
@@ -73,7 +73,8 @@ def main():
     log.info(f"Validation files: {len(parquet_files_valid)}")
         
     log.info(f"Found {nfiles} total files. Using {len(parquet_files_valid)} for validation.")
-    val_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_valid)
+    #val_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_valid[:10])
+    val_dataset = PathLossDataset(None, split="val", max_samples=1000)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
                         num_workers=NUM_WORKERS, pin_memory=True)
     # Benchmarking

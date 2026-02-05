@@ -4,12 +4,12 @@ import numpy as np
 import pandas as pd
 import glob
 import os
-
+from datasets import load_dataset #huggingface datasets
 
 from torch.utils.data import IterableDataset, get_worker_info
 
 class PathLossDataset(IterableDataset):
-    def __init__(self, parquet_dir, file_list=None, seq_length=750):
+    def __init__(self, parquet_dir, file_list=None, seq_length=750, split="train", max_samples=None):
         """
         Dataset that loads directly from parquet files using Hugging Face datasets in STREAMING mode.
         This avoids creating large cache files on disk.
@@ -19,24 +19,45 @@ class PathLossDataset(IterableDataset):
             file_list: Optional list of specific parquet file paths.
                        If None, uses all parquet files in parquet_dir.
             seq_length: Fixed sequence length for elevation (pad/truncate)
+            split: "train" (80%), "val" (10%), or "test" (10%) - only used for HF dataset
+            max_samples: Optional limit on number of samples (for quick benchmarking)
         """
         self.seq_length = seq_length
-
+        self.split = split
+        self.max_samples = max_samples
+        files = None
+        
         # Load parquet files
         if file_list is not None:
             files = file_list
-        else:
+        elif parquet_dir is not None:
             files = sorted(glob.glob(os.path.join(parquet_dir, "*.parquet")))
         
-        self.files = files
-        self.n_files = len(files)
+        if files is None or len(files) == 0:
+            print(f"No parquet files found. Loading from HF dataset (split={split})")
+            full_ds = load_dataset("alexcpn/longely_rice_model", split="train", streaming=True)
+            
+            # Apply split using modular arithmetic on indices
+            # Train: indices where idx % 10 < 8  (80%)
+            # Val:   indices where idx % 10 == 8 (10%)
+            # Test:  indices where idx % 10 == 9 (10%)
+            if split == "train":
+                self.dataset = full_ds.filter(lambda x, idx: idx % 10 < 8, with_indices=True)
+            elif split == "val":
+                self.dataset = full_ds.filter(lambda x, idx: idx % 10 == 8, with_indices=True)
+            else:  # test
+                self.dataset = full_ds.filter(lambda x, idx: idx % 10 == 9, with_indices=True)
+            
+            self.n_files = 1  # approximate
+        else:
+            print(f"Loading parquet files from {parquet_dir}")   
+            self.dataset = load_dataset("parquet", data_files=files, split="train", streaming=True)
+            self.n_files = len(files)
         
-        # Use Hugging Face datasets with streaming=True
-        from datasets import load_dataset
-        
-        # We pass the list of files to load_dataset
-        # split="train" is required even for local files usually
-        self.dataset = load_dataset("parquet", data_files=files, split="train", streaming=True)
+        # Apply max_samples limit if specified
+        if max_samples is not None:
+            self.dataset = self.dataset.take(max_samples)
+            print(f"Limiting dataset to {max_samples} samples")
         
         # Set a buffer size for shuffling. 
         # This provides local randomness without loading the whole dataset.

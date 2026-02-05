@@ -19,7 +19,7 @@ from datetime import datetime
 from torch.utils.data import DataLoader
 
 from pathloss_transformer import create_model, load_weights
-from dataset import PathLossDataset
+from pathloss_dataset import PathLossDataset
 
 # ============================================================
 # CONFIGURATION
