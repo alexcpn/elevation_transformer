@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Load loss data from the .npz file
-loss_log_file = "run-not-normalised/loss_log_20260120181721_.npy.npz" #d_model =8 heads
+loss_log_file = "logs/loss_log_20260204165247_.npy.npz" #d_model =8 heads
 
 try:
     data = np.load(loss_log_file, allow_pickle=True)

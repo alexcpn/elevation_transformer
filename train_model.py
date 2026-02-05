@@ -14,6 +14,7 @@ import glob
 import math
 import json
 import time
+import random
 from datetime import datetime
 from torch.utils.data import DataLoader
 
@@ -70,6 +71,8 @@ os.makedirs("weights", exist_ok=True)
 
 INPUT_DIR = "/data/itm_loss/"
 parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
+random.seed(42)  # For reproducibility
+random.shuffle(parquet_files)  # Shuffle to ensure train/val have similar distributions
 nfiles = len(parquet_files)
 log.info(f"Number of parquet files: {nfiles}")
 
@@ -148,15 +151,7 @@ for epoch in range(NUM_EPOCHS):
         # Mixed precision forward pass
         with torch.amp.autocast('cuda', enabled=USE_AMP):
             preds = model(features, elevation, mask=mask)
-
-            if USE_WEIGHTED_LOSS:
-                with torch.no_grad():
-                    errors = torch.abs(preds - targets)
-                    weights = 1.0 + WEIGHT_SCALE * torch.clamp(errors, 0, 30)
-                per_sample_loss = F.smooth_l1_loss(preds, targets, reduction='none')
-                loss = (weights * per_sample_loss).mean()
-            else:
-                loss = loss_function(preds, targets)
+            loss = loss_function(preds, targets)
 
         optimizer.zero_grad()
 

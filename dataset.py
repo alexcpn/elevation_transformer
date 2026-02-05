@@ -60,8 +60,9 @@ class PathLossDataset(IterableDataset):
             # Elevation: pad/truncate to seq_length, build mask
             elev = row['elevation_profile_m']
             
-            # Skip empty profiles to prevent NaN loss (Transformer yields NaN if mask is all True)
-            if len(elev) == 0:
+            # Skip empty profiles and where it is not written properly; proper sequnces should have length
+            # 750 (seq_length)
+            if len(elev) < self.seq_length:
                 continue
 
             elev_len = min(len(elev), self.seq_length)
