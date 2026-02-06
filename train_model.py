@@ -27,7 +27,8 @@ from pathloss_dataset import PathLossDataset
 # ============================================================
 
 # Set to None to train from scratch, or path to weights file to resume
-RESUME_FROM_WEIGHTS = "weights/model_weights20260204165247.pth"
+RESUME_FROM_WEIGHTS = "weights/model_weights20260204165247.pth" # trained in my laptio
+RESUME_FROM_WEIGHTS = "weights/model_weights20260205140023.pth" #trained in run pod from above
 
 # Weighted loss: upweight hard examples
 USE_WEIGHTED_LOSS = False  # Disabled - was causing loss spikes

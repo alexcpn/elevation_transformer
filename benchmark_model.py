@@ -1,11 +1,7 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import pandas as pd
 import numpy as np
 import os
 import glob
-import math
 import json
 import time
 import argparse
@@ -32,7 +28,7 @@ BATCH_SIZE = 64
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark PathLoss Transformer")
-    parser.add_argument("--weights", type=str, default="./weights/model_weights20260204165247.pth", help="Path to model weights file")
+    parser.add_argument("--weights", type=str, default="weights/model_weights20260205140023.pth", help="Path to model weights file")
     parser.add_argument("--batch_size", type=int, default=30, help="Batch size for inference")
     parser.add_argument("--data_dir", type=str, default="itm_loss", help="Directory containing parquet files")
     args = parser.parse_args()
