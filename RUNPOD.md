@@ -1,14 +1,33 @@
+# Running on RunPod
 
-To run in runport
+## Quick Setup with uv
 
-pip install datasets
-pip install pandas
+```bash
+# Install uv (fast Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-python -m pip install -U filelock huggingface_hub datasets
+# Install dependencies from pyproject.toml
+uv pip install -e .
 
-# If you hit: "CUDA error: no kernel image is available for execution on the device"
-# Check GPU + torch build compatibility
+# Or install specific packages
+uv pip install datasets pandas 
+```
+
+## Alternative: pip install
+
+```bash
+pip install datasets pandas 
+```
+
+## GPU Compatibility
+
+### If you hit: "CUDA error: no kernel image is available for execution on the device"
+
+Check GPU + torch build compatibility:
+
+```bash
 nvidia-smi
+
 python - <<'PY'
 import torch
 print("torch", torch.__version__)
@@ -17,16 +36,30 @@ print("archs", torch.cuda.get_arch_list())
 print("device", torch.cuda.get_device_name(0))
 print("capability", torch.cuda.get_device_capability(0))
 PY
+```
 
-# Reinstall a torch build that supports your GPU (pick one that matches your driver)
-# CUDA 12.8 build
+### Reinstall torch for your GPU
 
-You’re on an RTX 5090 (sm_120). Your current build is torch 2.1.0+cu118, which doesn’t include sm_120 kernels, so CUDA throws “no kernel image.” The fix is to install a PyTorch build compiled for CUDA 12.8+ (Blackwell support). PyTorch staff explicitly call out CUDA 12.8+ for Blackwell GPUs. (discuss.pytorch.org)
+**CUDA 12.8 build (for RTX 5090 / Blackwell sm_120):**
 
+```bash
+uv pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+```
 
-python -m pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+**CUDA 11.8 build:**
 
+```bash
+uv pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
 
+> Note: RTX 5090 (sm_120) requires CUDA 12.8+ builds. PyTorch staff explicitly call out CUDA 12.8+ for Blackwell GPUs.
 
-# CUDA 11.8 build
-python -m pip install --upgrade --force-reinstall torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+## Training
+
+```bash
+# Run training
+python train.py
+
+# View training loss
+python utils/loss_viewer.py
+```
