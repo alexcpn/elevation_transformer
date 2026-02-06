@@ -1,0 +1,57 @@
+graph TD
+    %% Define Styles
+    classDef storage fill:#e1f5fe,stroke:#01579b,stroke-width:2px;
+    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px;
+    classDef cache fill:#fff9c4,stroke:#fbc02d,stroke-width:2px;
+    classDef input fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px;
+
+    %% Nodes
+    Start([AFC Query Request<br/>lat1, lon1 → lat2, lon2]):::input
+    
+    subgraph Indexing [" Spatial Indexing & Geometry "]
+        RTree[In-Memory R-tree Index<br/>1,756 tile bounding boxes]:::process
+        Intersection[Line-Box Intersection<br/>Analytical Geometry]:::process
+        ResultSegments(Returns: 3-5 tile segments):::process
+    end
+
+    subgraph Caching [" Multi-Tier Cache Hierarchy "]
+        direction TB
+        L1[L1: LRU Tile Cache<br/>NumPy arrays - 125 GB]:::cache
+        L2[L2: Profile Cache<br/>Quantized ~1m res]:::cache
+        L3[L3: Redis Optional<br/>Shared Workers]:::cache
+    end
+
+    subgraph Storage [" Data Storage Layer "]
+        Zarr[("Zarr Dataset (LMDB)<br/>3612×3612 elevation array<br/>18 GB / Blosc 10.6:1")]:::storage
+    end
+
+    subgraph Compute [" Vectorized Compute Engine "]
+        Extraction[Vectorized Elevation Extraction<br/>• Geodesic sampling 30m<br/>• Affine transform<br/>• Bulk NumPy indexing<br/>• SIMD Operations]:::process
+    end
+
+    Output([Elevation Profile Output<br/>z1...z750 meters AGL]):::input
+    ITM[ITM Propagation Model]
+
+    %% Connections
+    Start --> RTree
+    RTree -- "O(log N) → O(1)" --> Intersection
+    Intersection --> ResultSegments
+    ResultSegments --> L1
+    
+    %% Cache Logic representation
+    L1 -.-> L2
+    L2 -.-> L3
+    
+    %% Cache Miss Flow
+    L3 -- "Cache Miss" --> Zarr
+    
+    %% Data Flow back to Compute
+    Zarr --> Extraction
+    L1 -- "Hit" --> Extraction
+    
+    %% Output Flow
+    Extraction --> Output
+    Output --> ITM
+
+    %% Link Styling
+    linkStyle default stroke:#333,stroke-width:1.5px;
