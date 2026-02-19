@@ -1,11 +1,7 @@
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import pandas as pd
 import numpy as np
 import os
 import glob
-import math
 import json
 import time
 import argparse
@@ -24,6 +20,7 @@ log.basicConfig(level=log.INFO,
 # Enable TF32 for faster matrix multiplication on Ampere+ GPUs
 torch.set_float32_matmul_precision('high')
 NUM_WORKERS = 4
+BATCH_SIZE = 64
 
 # ============================================================
 # MAIN EXECUTION
@@ -31,7 +28,7 @@ NUM_WORKERS = 4
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark PathLoss Transformer")
-    parser.add_argument("--weights", type=str, default="./weights/model_weights20260204165247.pth", help="Path to model weights file")
+    parser.add_argument("--weights", type=str, default="weights/model_weights20260205140023.pth", help="Path to model weights file")
     parser.add_argument("--batch_size", type=int, default=30, help="Batch size for inference")
     parser.add_argument("--data_dir", type=str, default="itm_loss", help="Directory containing parquet files")
     args = parser.parse_args()
@@ -143,6 +140,50 @@ def main():
     with open(output_file, "w") as f:
         json.dump(results, f, indent=2)
     log.info(f"Results saved to {output_file}")
+
+
+    # Speed benchmark
+    log.info("-" * 40)
+    log.info("SPEED BENCHMARK")
+    log.info("-" * 40)
+
+    # Get a sample batch for timing
+    sample_batch = next(iter(val_loader))
+    sample_features = sample_batch[0].cuda()
+    sample_elevation = sample_batch[1].cuda()
+    sample_mask = sample_batch[3].cuda()
+
+    # Warm-up GPU
+    with torch.no_grad():
+        for _ in range(10):
+            _ = model(sample_features, sample_elevation, mask=sample_mask)
+
+    # Time model inference
+    torch.cuda.synchronize()
+    num_runs = 100
+    start_time = time.time()
+    with torch.no_grad():
+        for _ in range(num_runs):
+            _ = model(sample_features, sample_elevation, mask=sample_mask)
+            torch.cuda.synchronize()
+    end_time = time.time()
+
+    total_time = end_time - start_time
+    time_per_batch = total_time / num_runs
+    samples_per_second = (BATCH_SIZE * num_runs) / total_time
+    time_per_sample_us = (total_time / (BATCH_SIZE * num_runs)) * 1e6
+
+
+
+    # Summary    
+    log.info(f"  Batch size: {BATCH_SIZE}")
+    log.info(f"  Runs: {num_runs}")
+    log.info(f"  Total time: {total_time:.3f} s")
+    log.info(f"  Time per batch: {time_per_batch*1000:.2f} ms")
+    log.info(f"  Time per sample: {time_per_sample_us:.1f} us")
+    log.info(f"  Throughput: {samples_per_second:.0f} samples/second")
+    log.info(f"  Inference speed: {samples_per_second:.0f} predictions/second")
+    log.info(f"  Time per prediction: {time_per_sample_us:.1f} us")
 
 if __name__ == "__main__":
     main()

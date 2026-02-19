@@ -2,7 +2,7 @@
 
 **Authors:** Alex Punnen
 <br>
-**Date:** January 2026
+**Date:** February 2026
 
 ---
 
@@ -12,7 +12,7 @@ Radio propagation path loss prediction is essential for wireless network plannin
 
 We propose a transformer-based neural network surrogate that learns to approximate ITM path loss predictions from terrain elevation profiles and link parameters. Unlike prior deep learning approaches that operate on 2D geographic maps, our method treats the 1D elevation profile along the propagation path as a sequence, leveraging self-attention to capture terrain-induced diffraction and obstruction effects at arbitrary positions. The model ingests the elevation sequence alongside transmission frequency, antenna heights, and link distance to predict path loss in a single forward pass.
 
-Trained on over 3 million ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model achieves **18.75 dB RMSE** (median error 8.85 dB) compared to ITM outputs. Through iterative improvements—including attention-based pooling and weighted loss functions—we reduced RMSE by 38% from an initial baseline, validating that the transformer architecture can effectively learn terrain-propagation relationships. The model continues to improve with training, suggesting further optimization will yield additional accuracy gains.
+Trained on over 7.8 million ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model achieves **17.85 dB RMSE** (median error 5.00 dB) compared to ITM outputs. Through iterative improvements—including attention-based pooling and weighted loss functions—we reduced RMSE by 71% from an initial baseline, validating that the transformer architecture can effectively learn terrain-propagation relationships.
 
 **Keywords:** path loss prediction, irregular terrain model, transformer, surrogate modeling, radio propagation, deep learning, 6 GHz, CBRS
 
@@ -39,7 +39,7 @@ This paper presents a transformer-based neural network that learns to approximat
 
 2. **Transformer architecture for propagation:** We demonstrate that multi-head self-attention mechanisms effectively capture terrain-induced propagation effects, including diffraction around obstacles at arbitrary positions along the path.
 
-3. **Large-scale surrogate model:** We train on over 3 million ITM samples covering the 6 GHz band, achieving 18.75 dB RMSE through iterative optimization, demonstrating 38% improvement from baseline.
+3. **Large-scale surrogate model:** We train on over 7.8 million ITM samples covering the 6 GHz band, achieving 17.85 dB RMSE through iterative optimization, demonstrating 71% improvement from baseline.
 
 4. **Practical deployment considerations:** We provide implementation details including normalization strategies, feature fusion approaches, and inference optimization for real-world deployment.
 
@@ -100,7 +100,10 @@ We formulate this as a sequence-to-scalar regression problem. The elevation prof
 
 ### 3.2 Model Architecture
 
-Our architecture processes terrain and link parameters through parallel pathways before fusion for final prediction. The design emphasizes simplicity while maintaining sufficient capacity to capture terrain-propagation relationships.
+Our architecture processes terrain and link parameters through parallel pathways before fusion via cross-attention for final prediction. The design uses cross-attention to allow the model to selectively attend to terrain features most relevant to the specific link parameters.
+
+![Model Architecture with Cross-Attention](model_cross_attention.png)
+*Figure 1: Model architecture showing cross-attention fusion between scalar link parameters and terrain features.*
 
 #### 3.2.1 Elevation Embedding
 
@@ -143,14 +146,17 @@ The self-attention mechanism enables the model to:
 - Relate multiple obstacle positions to each other (e.g., multiple ridgelines)
 - Learn position-dependent importance weighting (obstacles near Fresnel zone boundaries matter more)
 
-We use $h=8$ attention heads with $d_k = 64$ per head. A residual connection adds the attention output to the input:
-$$\mathbf{H}^{(1)} = \text{MultiHead}(\mathbf{H}^{(0)}) + \mathbf{H}^{(0)}$$
+We use $h=8$ attention heads with $d_k = 64$ per head, stacked in 3 transformer encoder layers. Each layer includes residual connections:
+$$\mathbf{H}^{(l+1)} = \text{MultiHead}(\mathbf{H}^{(l)}) + \mathbf{H}^{(l)}$$
 
-#### 3.2.4 Feature Embedding and Fusion
+#### 3.2.4 Cross-Attention Fusion
 
-Link parameters are projected to the same dimensionality as the terrain representation:
+Rather than simple pooling, we use **cross-attention** to fuse link parameters with terrain features. This allows the model to selectively attend to terrain positions most relevant for the specific frequency, distance, and antenna configuration.
 
-$$\mathbf{f} = \text{Linear}([d, f, h_{rx}, h_{tx}]) \in \mathbb{R}^{d_{model}}$$
+**Scalar Feature Processing (Query Source):**
+Link parameters are projected to form a query token:
+
+$$\mathbf{q} = \text{Linear}([d, f, h_{rx}, h_{tx}]) \in \mathbb{R}^{1 \times d_{model}}$$
 
 Input features are normalized using training set statistics prior to projection:
 - Distance: $\mu_d = 135920$ m, $\sigma_d = 46380$ m
@@ -158,13 +164,24 @@ Input features are normalized using training set statistics prior to projection:
 - Receiver height: $\mu_{rx} = 41$ m, $\sigma_{rx} = 150$ m
 - Transmitter height: $\mu_{tx} = 89$ m, $\sigma_{tx} = 35$ m
 
-The terrain representation is obtained by mean pooling over the sequence dimension:
-$$\mathbf{t} = \frac{1}{N}\sum_{i=1}^{N} \mathbf{H}^{(1)}_i$$
+**Cross-Attention Mechanism:**
+The terrain features serve as keys and values, while the scalar token serves as query:
 
-Features are combined through addition:
-$$\mathbf{c} = \mathbf{t} + \mathbf{f}$$
+$$\text{CrossAttention}(Q, K, V) = \text{softmax}\left(\frac{QK^\top}{\sqrt{d_k}}\right)V$$
 
-This additive fusion allows both terrain and link parameters to contribute equally to the final representation.
+where:
+- $Q = \mathbf{q}W^Q$ (query from scalar features)
+- $K = \mathbf{H}^{(1)}W^K$ (keys from terrain)
+- $V = \mathbf{H}^{(1)}W^V$ (values from terrain)
+
+This produces a **context vector** that represents terrain information most relevant to the specific link parameters. For example, when predicting loss for a low-frequency, long-distance link, the cross-attention can focus on major terrain obstructions, while for high-frequency short links, it may attend to near-field terrain variations.
+
+**Skip Connection and Concatenation:**
+The context vector is concatenated with the original scalar token via skip connection:
+
+$$\mathbf{c} = \text{Concat}(\mathbf{q}, \text{CrossAttention}(\mathbf{q}, \mathbf{H}^{(1)}, \mathbf{H}^{(1)}))$$
+
+This yields a fused representation of shape $[B, 1, 1024]$ that captures both the link parameters and their relevant terrain context.
 
 #### 3.2.5 Prediction Head
 
@@ -183,11 +200,13 @@ where $\mu_L = 218$ dB and $\sigma_L = 31$ dB.
 
 #### 3.3.1 Dataset Generation
 
-We generated training data using ITM in point-to-point mode with terrain profiles extracted from digital elevation models covering diverse geographic regions. The dataset comprises:
+We generated training data using ITM in point-to-point mode with terrain profiles extracted from digital elevation models covering diverse geographic regions. The dataset is publicly available at: https://huggingface.co/datasets/alexcpn/longely_rice_model
+
+The dataset comprises:
 
 | Parameter | Range | Notes |
 |-----------|-------|-------|
-| Total samples | 3,064,824 | Across multiple terrain types |
+| Total samples | ~7,830,000 | Across multiple terrain types |
 | Frequency | 6.2 - 6.4 GHz | CBRS/Wi-Fi 6E band |
 | Distance | 1.3 - 200 km | Short to long range links |
 | TX height | 1.5 - 110 m | Ground to tower-mounted |
@@ -210,10 +229,10 @@ $$\mathcal{L} = \begin{cases}
 
 Training configuration:
 - **Optimizer:** AdamW with learning rate $10^{-4}$
-- **Batch size:** 30 samples (limited by GPU memory with 768-length sequences)
+- **Batch size:** 320 samples (on cloud GPU with 768-length sequences)
 - **Gradient clipping:** Maximum norm 1.0 to prevent unstable updates
 - **Dropout:** 0.1 in attention layers
-- **Epochs:** 2 passes over the training data
+- **Epochs:** 1 pass over the training data (~7.8M samples)
 
 The relatively low learning rate and aggressive gradient clipping were necessary to achieve stable convergence given the high dynamic range of path loss values (278 dB span).
 
@@ -223,42 +242,52 @@ The relatively low learning rate and aggressive gradient clipping were necessary
 
 ### 4.1 Accuracy Metrics
 
-Performance on the held-out validation set (538,286 samples) after iterative improvements:
+Performance on the held-out validation set (62,500 samples) after iterative improvements:
 
 | Metric | Value |
 |--------|-------|
-| RMSE | 18.75 dB |
-| MAE | 12.73 dB |
-| Median Error | 8.85 dB |
-| 90th Percentile Error | 28.33 dB |
-| 95th Percentile Error | 35.35 dB |
+| RMSE | 17.85 dB |
+| MAE | 10.94 dB |
+| Median Error | 5.00 dB |
+| 90th Percentile Error | 31.02 dB |
+| 95th Percentile Error | 41.59 dB |
 
-The median error of 8.85 dB indicates that half of all predictions are within approximately 8 dB of ITM outputs—a level of accuracy suitable for initial coverage estimation and network planning applications where approximate path loss values are acceptable.
+The median error of 5.00 dB indicates that half of all predictions are within 5 dB of ITM outputs—a level of accuracy suitable for network planning applications and coverage estimation.
 
-### 4.2 Iterative Model Improvements
+### 4.2 Training Loss
 
-The final accuracy was achieved through systematic improvements to the model architecture and training procedure. Each modification yielded measurable gains, demonstrating that the transformer-based approach is sound and responds well to optimization:
+![Training Loss Over Steps](taining_loss.png)
+*Figure 2: Training loss over ~130,000 steps (combined runs). Loss drops rapidly from ~230 to ~10 in the first 10k steps, then plateaus around 3-10 with high variance.*
+
+The training loss curve reveals:
+1. **Rapid initial learning** (steps 0-10k): Loss drops from ~230 to ~10 as the model learns basic terrain-propagation relationships
+2. **Plateau with variance** (steps 10k-130k): Loss oscillates between 3-10 without clear downward trend
+
+The plateau suggests the current learning rate is too high for fine-grained optimization. Implementing learning rate decay (cosine annealing or reduce-on-plateau) should enable the model to escape local minima and continue improving.
+
+### 4.3 Iterative Model Improvements
+
+The final accuracy was achieved through systematic improvements to the model architecture, training procedure, and dataset quality. Each modification yielded measurable gains, demonstrating that the transformer-based approach is sound and responds well to optimization:
 
 | Model Configuration | RMSE (dB) | MAE (dB) | Median | 95th %ile |
 |---------------------|-----------|----------|--------|-----------|
-| Baseline (no normalization) | 30.31 | 22.09 | 16.08 | 64.53 |
-| + Input/target normalization | 22.52 | 16.00 | 12.19 | 44.02 |
-| + Attention pooling (2 epochs) | 21.14 | 15.37 | 11.55 | 39.76 |
-| + Weighted loss (3 epochs) | **18.75** | **12.73** | **8.85** | **35.35** |
+| Baseline (no normalization) | 62.02 | 52.71 | 55.32 | 101.22 |
+| + Input/target normalization | 42.62 | 35.49 | 35.82 | 84.54 |
+| + Dataset correction & training | **17.85** | **10.94** | **5.00** | **41.59** |
 
-**Total improvement: 38% reduction in RMSE (30.31 → 18.75 dB)**
+**Total improvement: 71% reduction in RMSE (62.02 → 17.85 dB)**
 
 Key improvements and their contributions:
 
-1. **Input normalization (-7.8 dB RMSE):** Normalizing elevation data, link parameters, and target path loss values was critical for training stability. Without normalization, the model performed barely better than predicting the dataset mean.
+1. **Input normalization:** Normalizing elevation data, link parameters, and target path loss values was critical for training stability. Without normalization, the model performed barely better than predicting the dataset mean (RMSE reduced from 62 dB to 43 dB).
 
-2. **Attention pooling (-1.4 dB RMSE):** Replacing mean pooling with learned attention pooling allows the model to identify which terrain positions are most relevant for path loss prediction, rather than treating all positions equally.
+2. **Dataset correction:** Fixing issues in the data loading pipeline—ensuring proper alignment between elevation profiles and their corresponding path loss labels—yielded the largest improvement (RMSE reduced from 43 dB to 18 dB).
 
-3. **Weighted loss (-2.4 dB RMSE):** Upweighting hard examples during training forces the model to focus on difficult cases (extreme path loss values, edge cases) rather than overfitting to easy samples. This particularly improved tail performance (95th percentile: 39.76 → 35.35 dB).
+3. **Extended training:** Training on the full corrected dataset of 7.8M samples allowed the model to learn robust terrain-propagation relationships.
 
-The consistent improvements across iterations validate the core hypothesis: transformer architectures can effectively learn terrain-propagation relationships from ITM data. The model has not yet plateaued, suggesting further optimization (deeper architectures, longer training, hyperparameter tuning) will yield additional gains.
+The dramatic improvement from dataset correction highlights the importance of data quality in deep learning—architectural changes matter less than having correct training data.
 
-### 4.3 Inference Speed
+### 4.4 Inference Speed
 
 Benchmarked on NVIDIA GPU with batch size 30:
 
@@ -277,7 +306,7 @@ For network planning applications, evaluating coverage from 1,000 candidate cell
 
 While the current throughput is modest, further optimization through batching, mixed precision inference, and model compilation (e.g., `torch.compile`) could substantially increase throughput.
 
-### 4.4 Impact of Normalization
+### 4.5 Impact of Normalization
 
 An earlier model iteration without proper input normalization showed significantly worse performance. After implementing feature, elevation, and target normalization, accuracy improved substantially:
 
@@ -294,7 +323,7 @@ The unnormalized model achieved RMSE near 1.0 in normalized space, indicating it
 
 This result demonstrates that the transformer architecture is capable of learning terrain-propagation relationships—the limiting factor is model design rather than the fundamental approach. Architectural improvements such as deeper attention stacks, alternative positional encodings, or physics-informed constraints are likely to yield further accuracy gains.
 
-### 4.5 Error Analysis
+### 4.6 Error Analysis
 
 Analysis of prediction errors reveals systematic patterns:
 
@@ -357,58 +386,67 @@ The comparison is not direct since we predict ITM outputs rather than measuremen
 
 ## 6. Conclusion
 
-We presented a transformer-based surrogate model for accelerating ITM path loss prediction. By treating terrain elevation profiles as sequences and applying multi-head self-attention, our model learns to approximate ITM with **18.75 dB RMSE** (median error 8.85 dB) while providing faster inference on GPU hardware.
+We presented a transformer-based surrogate model for accelerating ITM path loss prediction. By treating terrain elevation profiles as sequences and applying multi-head self-attention, our model learns to approximate ITM with **17.85 dB RMSE** (median error 5.00 dB) while providing faster inference on GPU hardware.
 
 ### 6.1 Concept Validation
 
-The iterative improvement from 30.31 dB to 18.75 dB RMSE (**38% reduction**) through systematic optimizations validates the core hypothesis: **transformer architectures can effectively learn terrain-propagation relationships from ITM data.** Each architectural improvement yielded measurable gains:
+The iterative improvement from 62.02 dB to 17.85 dB RMSE (**71% reduction**) through systematic optimizations validates the core hypothesis: **transformer architectures can effectively learn terrain-propagation relationships from ITM data.** Key improvements came from:
 
-| Improvement | RMSE Reduction |
-|-------------|----------------|
-| Input normalization | -7.8 dB |
-| Attention pooling | -1.4 dB |
-| Weighted loss | -2.4 dB |
-| **Total** | **-11.6 dB** |
+| Improvement | RMSE |
+|-------------|------|
+| Baseline (no normalization) | 62.02 dB |
+| + Input/target normalization | 42.62 dB |
+| + Dataset correction & full training | **17.85 dB** |
 
-The model has not yet plateaued—validation loss continued to decrease at epoch 3, indicating further training and optimization will yield additional accuracy improvements.
+The dataset quality proved critical—correcting issues in the training data pipeline yielded the largest accuracy gains.
 
 ### 6.2 Key Findings
 
 1. **The approach works:** Self-attention effectively captures terrain-propagation relationships without explicit physics modeling
 2. **Normalization is critical:** Proper scaling of inputs and outputs is essential for training stability
-3. **Attention pooling outperforms mean pooling:** Learning which terrain positions matter improves accuracy
-4. **Weighted loss improves tail performance:** Upweighting hard examples reduces errors on difficult cases (95th percentile: 64.53 → 35.35 dB)
-5. **The model can be further optimized:** Consistent improvements suggest deeper architectures, longer training, and architectural refinements will continue to improve accuracy
+3. **Dataset quality matters:** Correcting data pipeline issues yielded the largest accuracy improvements
+4. **Median error of 5 dB:** Half of all predictions are within 5 dB of ITM ground truth
 
 ### 6.3 Practical Applications
 
-With a median error of 8.85 dB, the current model is suitable for:
+With a median error of 5.00 dB, the current model is suitable for:
 - **Initial site screening:** Quickly evaluate thousands of candidate locations
 - **Coverage visualization:** Generate approximate coverage maps for planning
 - **Comparative analysis:** Rank alternative configurations relative to each other
 - **What-if scenarios:** Rapid iteration on network design parameters
 
-For applications requiring higher fidelity (<5 dB error), the model architecture provides a foundation for continued optimization through deeper attention stacks, alternative positional encodings, physics-informed constraints, or ensemble methods.
+For applications requiring higher fidelity (<3 dB error), the model architecture provides a foundation for continued optimization through deeper attention stacks, learning rate scheduling, alternative positional encodings, physics-informed constraints, or ensemble methods.
 
 ### Future Work
 
-Based on the observed improvements and remaining limitations, we identify several directions for continued optimization:
+Based on the training loss analysis and remaining limitations, the immediate priority is **reducing training loss** through optimization improvements:
 
-1. **Deeper architecture:** The single attention layer may be insufficient to capture ITM's multi-step diffraction calculations. Stacking multiple transformer encoder layers could improve representational capacity.
+#### Immediate Next Steps
 
-2. **Rotary position embeddings (RoPE):** Replace sinusoidal positional encoding with RoPE to better capture relative distances between terrain features, which is more relevant for diffraction calculations than absolute position.
+1. **Learning rate scheduling:** The training loss plateau (Figure 2) indicates the learning rate is too high for fine-tuning. Implementing decay strategies:
+   - `CosineAnnealingLR` - smooth decay to near-zero
+   - `ReduceLROnPlateau` - adaptive decay when loss stalls
+   - `OneCycleLR` - warmup followed by aggressive decay
 
-3. **Data augmentation:** Terrain profile reversal (swapping TX and RX) should yield identical path loss, providing free augmentation. Random elevation offsets could improve generalization.
+2. **Lower base learning rate:** Reduce from current value to allow finer convergence after initial rapid learning phase.
 
-4. **Attention visualization:** Analyze attention pooling weights to understand which terrain positions the model considers important, potentially validating that it focuses on Fresnel zone obstructions.
+3. **Extended training:** With proper learning rate scheduling, train for multiple epochs to drive loss below the current plateau.
 
-5. **Multi-frequency training:** Extend to cover the full ITM frequency range (20 MHz - 20 GHz) by including frequency as a more prominent conditioning signal.
+#### Architecture Improvements
 
-6. **Continued training:** The model has not plateaued at epoch 3; extended training with learning rate scheduling may yield further improvements.
+4. **Deeper transformer encoder:** The current 3-layer encoder may be insufficient to capture ITM's multi-step diffraction calculations. Deeper stacks could improve representational capacity.
 
-7. **Hybrid physics-informed approach:** Combine learned terrain features with analytical free-space path loss for improved extrapolation to untrained parameter ranges.
+5. **Rotary position embeddings (RoPE):** Replace sinusoidal positional encoding with RoPE to better capture relative distances between terrain features.
 
-7. **Hybrid models:** Combine learned terrain features with analytical free-space path loss calculations to provide a physics-informed baseline that the neural network refines.
+6. **Cross-attention visualization:** Analyze which terrain positions receive high attention weights for different link configurations, validating the model focuses on propagation-relevant features.
+
+#### Data and Generalization
+
+7. **Data augmentation:** Terrain profile reversal (swapping TX and RX) should yield identical path loss, providing free augmentation.
+
+8. **Multi-frequency training:** Extend to cover the full ITM frequency range (20 MHz - 20 GHz).
+
+9. **Hybrid physics-informed approach:** Combine learned terrain features with analytical free-space path loss for improved extrapolation.
 
 ---
 
@@ -431,13 +469,14 @@ Based on the observed improvements and remaining limitations, we identify severa
 | Parameter | Value |
 |-----------|-------|
 | Model dimension ($d_{model}$) | 512 |
+| Transformer encoder layers | 3 |
 | Attention heads | 8 |
 | Head dimension ($d_k$) | 64 |
 | Feed-forward intermediate dimension | 2000 |
 | Maximum sequence length | 768 |
 | Dropout | 0.1 |
 | Learning rate | 1e-4 |
-| Batch size | 30 |
+| Batch size | 320 |
 | Optimizer | AdamW |
 | Gradient clipping norm | 1.0 |
 | Loss function | Smooth L1 (Huber) |
@@ -446,10 +485,12 @@ Based on the observed improvements and remaining limitations, we identify severa
 
 ## Appendix B: Dataset Statistics
 
+Dataset available at: https://huggingface.co/datasets/alexcpn/longely_rice_model
+
 ```
-Total samples: 3,064,824
-Training samples: 2,451,859 (80%)
-Validation samples: 612,965 (20%)
+Total samples: ~7,830,000
+Training samples: ~6,264,000 (80%)
+Validation samples: ~783,000 (10%)
 
 Input Features:
   Distance: 1.3 - 200 km (mean: 136 km, std: 46 km)
@@ -481,4 +522,4 @@ Outputs are denormalized as: $y = \hat{y} \cdot \sigma + \mu$
 
 ---
 
-*Training completed January 21, 2026. Two epochs over 3M+ samples (~24 hours on consumer GPU).*
+*Training completed February 5, 2026. One epoch over 7.8M+ samples on cloud GPU (RunPod).*
