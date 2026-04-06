@@ -12,7 +12,7 @@ Radio propagation path loss prediction is essential for wireless network plannin
 
 We propose a transformer-based neural network surrogate that learns to approximate ITM path loss predictions from terrain elevation profiles and link parameters. Unlike prior deep learning approaches that operate on 2D geographic maps, our method treats the 1D elevation profile along the propagation path as a sequence, leveraging self-attention to capture terrain-induced diffraction and obstruction effects at arbitrary positions. The model ingests the elevation sequence alongside transmission frequency, antenna heights, and link distance to predict path loss in a single forward pass.
 
-Trained on over 7.8 million ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model achieves **17.85 dB RMSE** (median error 5.00 dB) compared to ITM outputs. Through iterative improvements—including attention-based pooling and weighted loss functions—we reduced RMSE by 71% from an initial baseline, validating that the transformer architecture can effectively learn terrain-propagation relationships and that the training loss can be driven down substantially with the right data pipeline and normalization. Direct benchmarking on the current workstation shows that the present transformer inference path is still substantially slower than the native ITM implementation: **1314.8 us** per prediction for the model versus **11.0 us** for direct ITM at batch size 64 over 100 timed runs. We have not yet established whether this gap reflects a fundamental limitation of the current model class or a remediable engineering issue in the present implementation, so the current contribution is best interpreted as concept validation rather than acceleration.
+Trained on over 7.8 million ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model achieves **17.85 dB RMSE** (median error 5.00 dB) compared to ITM outputs. The training dataset is publicly available at `https://huggingface.co/datasets/alexcpn/longely_rice_model`, and the released model weights are available at `https://huggingface.co/alexcpn/elevation_transformer/tree/main`. Through iterative improvements—including attention-based pooling and weighted loss functions—we reduced RMSE by 71% from an initial baseline, validating that the transformer architecture can effectively learn terrain-propagation relationships and that the training loss can be driven down substantially with the right data pipeline and normalization. Direct benchmarking on the current workstation shows that the present transformer inference path is still substantially slower than the native ITM implementation: **1314.8 us** per prediction for the model versus **11.0 us** for direct ITM at batch size 64 over 100 timed runs. We have not yet established whether this gap reflects a fundamental limitation of the current model class or a remediable engineering issue in the present implementation, so the current contribution is best interpreted as concept validation rather than acceleration.
 
 **Keywords:** path loss prediction, irregular terrain model, transformer, surrogate modeling, radio propagation, deep learning, 6 GHz, CBRS
 
@@ -289,7 +289,7 @@ The dramatic improvement from dataset correction highlights the importance of da
 
 ### 4.4 Current Runtime Measurements
 
-We compared the current transformer inference path against the native ITM implementation on the same workstation using batch size 64 and 100 timed runs. The transformer was measured with `benchmark_model.py`, and direct ITM was measured with `benchmark_itm.py` on the local `itm_loss_test` parquet subset.
+We compared the current transformer inference path against the native ITM implementation on the same workstation using batch size 64 and 100 timed runs. The transformer was measured with `benchmark_model.py`, and direct ITM was measured with `benchmark_itm.py` on the local `itm_loss_test` parquet subset. The corresponding benchmark artifacts are published at: https://huggingface.co/alexcpn/elevation_transformer/tree/main/eval
 
 This runtime comparison is included as a practical diagnostic, not as the primary claim of the work. The main result of the project is that an attention-based model can learn a meaningful approximation to ITM and that training loss decreases substantially as the data pipeline and normalization are corrected.
 
@@ -495,6 +495,8 @@ Based on the current results, the immediate priority is **reducing loss and erro
 ## Appendix B: Dataset Statistics
 
 Dataset available at: https://huggingface.co/datasets/alexcpn/longely_rice_model
+Model weights available at: https://huggingface.co/alexcpn/elevation_transformer/tree/main
+Benchmark artifacts available at: https://huggingface.co/alexcpn/elevation_transformer/tree/main/eval
 
 ```
 Total samples: ~7,830,000

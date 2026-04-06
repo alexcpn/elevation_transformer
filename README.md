@@ -1,4 +1,4 @@
-# Transformer-Based Surrogate Model for Accelerated Irregular Terrain Model Path Loss Prediction
+# Transformer-Based Surrogate Model for Irregular Terrain Model Path Loss Prediction
 
 **Authors:** Alex Punnen
 <br>
@@ -8,11 +8,11 @@
 
 ## Abstract
 
-Radio propagation path loss prediction is essential for wireless network planning, coverage optimization, and spectrum management. The Irregular Terrain Model (ITM), also known as Longley-Rice, provides physics-based path loss estimates by analyzing terrain profiles between transmitter and receiver locations. However, ITM's computational complexity limits its applicability in scenarios requiring rapid evaluation of millions of candidate links, such as large-scale network deployment or real-time spectrum sharing.
+Radio propagation path loss prediction is essential for wireless network planning, coverage optimization, and spectrum management. The Irregular Terrain Model (ITM), also known as Longley-Rice, provides physics-based path loss estimates by analyzing terrain profiles between transmitter and receiver locations. Evaluating millions of candidate links still makes runtime and system efficiency important concerns, motivating investigation of learned surrogates.
 
 We propose a transformer-based neural network surrogate that learns to approximate ITM path loss predictions from terrain elevation profiles and link parameters. Unlike prior deep learning approaches that operate on 2D geographic maps, our method treats the 1D elevation profile along the propagation path as a sequence, leveraging self-attention to capture terrain-induced diffraction and obstruction effects at arbitrary positions. The model ingests the elevation sequence alongside transmission frequency, antenna heights, and link distance to predict path loss in a single forward pass.
 
-Trained on over 7.8 million ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model achieves **17.85 dB RMSE** (median error 5.00 dB) compared to ITM outputs. Through iterative improvements—including attention-based pooling and weighted loss functions—we reduced RMSE by 71% from an initial baseline, validating that the transformer architecture can effectively learn terrain-propagation relationships.
+Trained on over 7.8 million ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model achieves **17.85 dB RMSE** (median error 5.00 dB) compared to ITM outputs. The training dataset is publicly available at `https://huggingface.co/datasets/alexcpn/longely_rice_model`, and the released model weights are available at `https://huggingface.co/alexcpn/elevation_transformer/tree/main`. Through iterative improvements—including attention-based pooling and weighted loss functions—we reduced RMSE by 71% from an initial baseline, validating that the transformer architecture can effectively learn terrain-propagation relationships and that the training loss can be driven down substantially with the right data pipeline and normalization. Direct benchmarking on the current workstation shows that the present transformer inference path is still substantially slower than the native ITM implementation: **1314.8 us** per prediction for the model versus **11.0 us** for direct ITM at batch size 64 over 100 timed runs. We have not yet established whether this gap reflects a fundamental limitation of the current model class or a remediable engineering issue in the present implementation, so the current contribution is best interpreted as concept validation rather than acceleration.
 
 **Keywords:** path loss prediction, irregular terrain model, transformer, surrogate modeling, radio propagation, deep learning, 6 GHz, CBRS
 
@@ -29,9 +29,9 @@ However, modern network planning applications increasingly require path loss est
 - **Drone communications:** Continuous path loss updates along flight trajectories for beyond-visual-line-of-sight operations
 - **Digital twins:** Simulating wireless coverage across entire metropolitan areas with millions of potential link combinations
 
-For these applications, ITM's computational cost becomes prohibitive. Each ITM calculation requires processing the terrain profile point-by-point, computing diffraction losses using knife-edge or rounded obstacle models, and applying statistical variability corrections. These operations scale poorly when repeated millions of times, with typical implementations requiring tens of milliseconds per link evaluation.
+For these applications, large-scale propagation evaluation remains an important systems bottleneck, making surrogate modeling attractive in principle. However, mature native ITM implementations are already highly optimized, so acceleration cannot be assumed a priori and must be established through direct benchmarking.
 
-This paper presents a transformer-based neural network that learns to approximate ITM predictions with high fidelity while dramatically reducing computation time. By treating the terrain elevation profile as a sequence and applying self-attention mechanisms, our model captures the complex interactions between terrain features that determine propagation loss. The key insight is that diffraction and obstruction effects depend on the relative positions and heights of terrain features along the entire path—a relationship that self-attention is naturally suited to model.
+This paper presents a transformer-based neural network that learns to approximate ITM predictions with high fidelity and uses runtime benchmarking as a secondary diagnostic rather than the primary success criterion. By treating the terrain elevation profile as a sequence and applying self-attention mechanisms, our model captures the complex interactions between terrain features that determine propagation loss. The key insight is that diffraction and obstruction effects depend on the relative positions and heights of terrain features along the entire path—a relationship that self-attention is naturally suited to model.
 
 ### 1.1 Contributions
 
@@ -41,7 +41,7 @@ This paper presents a transformer-based neural network that learns to approximat
 
 3. **Large-scale surrogate model:** We train on over 7.8 million ITM samples covering the 6 GHz band, achieving 17.85 dB RMSE through iterative optimization, demonstrating 71% improvement from baseline.
 
-4. **Practical deployment considerations:** We provide implementation details including normalization strategies, feature fusion approaches, and inference optimization for real-world deployment.
+4. **Concept validation with runtime reality check:** We show that attention-based sequence modeling can learn the ITM mapping and reduce loss substantially, while also documenting that the present implementation is not yet competitive with native ITM in inference throughput and that the cause of this gap has not yet been isolated.
 
 ---
 
@@ -287,24 +287,26 @@ Key improvements and their contributions:
 
 The dramatic improvement from dataset correction highlights the importance of data quality in deep learning—architectural changes matter less than having correct training data.
 
-### 4.4 Inference Speed
+### 4.4 Current Runtime Measurements
 
-Benchmarked on NVIDIA GPU with batch size 30:
+We compared the current transformer inference path against the native ITM implementation on the same workstation using batch size 64 and 100 timed runs. The transformer was measured with `benchmark_model.py`, and direct ITM was measured with `benchmark_itm.py` on the local `itm_loss_test` parquet subset. The corresponding benchmark artifacts are published at: https://huggingface.co/alexcpn/elevation_transformer/tree/main/eval
 
-| Metric | Value |
-|--------|-------|
-| Time per sample | 1,201 µs |
-| Throughput | 832 samples/second |
-| Time per batch | 36.04 ms |
-| Estimated speedup vs ITM | 10-40x |
+This runtime comparison is included as a practical diagnostic, not as the primary claim of the work. The main result of the project is that an attention-based model can learn a meaningful approximation to ITM and that training loss decreases substantially as the data pipeline and normalization are corrected.
 
-ITM point-to-point calculations typically require 10-50 ms depending on implementation and terrain profile length. Our model achieves approximately 1.2 ms per sample, providing meaningful speedup for batch processing scenarios.
+Importantly, the timed transformer loop reuses tensors that were already moved to CUDA before timing began. Therefore, the reported **1,314.8 us** per prediction excludes host-to-device transfer and indicates that PCIe copy time is not the dominant factor in this benchmark.
 
-For network planning applications, evaluating coverage from 1,000 candidate cell sites to 10,000 potential user locations (10 million links) would require:
-- Native ITM (at 30 ms avg): ~83 hours
-- Our model: ~3.3 hours
+| Engine | Time per sample | Throughput | Time per batch | Relative speed |
+|--------|-----------------|------------|----------------|----------------|
+| Direct ITM (`itm.ITMLossWinnf.getItmLoss`) | 11.0 µs | 91,082 predictions/second | 0.70 ms | 1.0x |
+| Transformer surrogate | 1,314.8 µs | 761 predictions/second | 84.15 ms | 119.7x slower than direct ITM |
 
-While the current throughput is modest, further optimization through batching, mixed precision inference, and model compilation (e.g., `torch.compile`) could substantially increase throughput.
+The current surrogate does not outperform the optimized native ITM code path. Even with GPU batching, the transformer is approximately 120x slower on this workload.
+
+For a workload of 10 million links, the measured throughputs correspond to:
+- Direct ITM: ~1.83 minutes
+- Transformer surrogate: ~3.65 hours
+
+These measurements reposition the current model as an accuracy-oriented concept-validation study rather than a deployable acceleration layer. However, they should be interpreted as descriptive rather than diagnostic: we have not yet profiled the forward path deeply enough to determine whether the observed slowdown is driven mainly by current engineering choices, PyTorch kernel behavior, padding and masking overhead, model size, sequence length, or some more fundamental architectural cost.
 
 ### 4.5 Impact of Normalization
 
@@ -366,6 +368,8 @@ The self-attention mechanism is well-suited to terrain-based propagation modelin
 
 4. **Interpolation vs. extrapolation:** The model performs best when input parameters fall within the training distribution. Extreme distances, heights, or terrain configurations may produce unreliable predictions.
 
+5. **Current implementation cost:** On the current benchmark workload, the transformer surrogate is about 120x slower than the native ITM implementation. In its present form it is therefore not a practical drop-in replacement when throughput is the primary constraint. We have not yet established whether this is fundamentally unavoidable or primarily an engineering problem in the present implementation.
+
 ### 5.3 Comparison with Prior Work
 
 | Approach | Input Type | Target | Environment | Reported Accuracy |
@@ -373,10 +377,10 @@ The self-attention mechanism is well-suited to terrain-based propagation modelin
 | Levie et al. [2] | 2D building maps | Measurements | Urban | ~8 dB RMSE |
 | Hehn et al. [4] | 2D building maps | Measurements | Urban | State-of-art |
 | Ensemble methods [3] | Aggregate features | Measurements | Various | ~6-10 dB RMSE |
-| **This work** | 1D terrain profile | ITM output | Rural/suburban | **18.75 dB RMSE** |
+| **This work** | 1D terrain profile | ITM output | Rural/suburban | **17.85 dB RMSE** |
 
 Our approach differs fundamentally by:
-- Using 1D sequences rather than 2D images, reducing computational cost
+- Using 1D sequences rather than 2D images, simplifying the input representation
 - Targeting ITM approximation rather than direct measurement fitting
 - Focusing on terrain-dominated (non-urban) environments
 
@@ -386,7 +390,7 @@ The comparison is not direct since we predict ITM outputs rather than measuremen
 
 ## 6. Conclusion
 
-We presented a transformer-based surrogate model for accelerating ITM path loss prediction. By treating terrain elevation profiles as sequences and applying multi-head self-attention, our model learns to approximate ITM with **17.85 dB RMSE** (median error 5.00 dB) while providing faster inference on GPU hardware.
+We presented a transformer-based surrogate model for approximating ITM path loss prediction. By treating terrain elevation profiles as sequences and applying multi-head self-attention, our model learns to approximate ITM with **17.85 dB RMSE** (median error 5.00 dB). The main result is therefore conceptual: attention-based sequence models can learn useful terrain-propagation relationships from ITM-generated data, and the loss decreases materially as the model and data pipeline are improved. Direct benchmarking shows that the current implementation does not yet provide a runtime win over native ITM: the transformer requires **1,314.8 us** per prediction versus **11.0 us** for direct ITM on the measured workload. At the same time, we have not yet done enough systems-level profiling to say whether this slowdown is inherent to the present architecture or largely an implementation and optimization issue.
 
 ### 6.1 Concept Validation
 
@@ -402,24 +406,25 @@ The dataset quality proved critical—correcting issues in the training data pip
 
 ### 6.2 Key Findings
 
-1. **The approach works:** Self-attention effectively captures terrain-propagation relationships without explicit physics modeling
+1. **The mapping is learnable:** Self-attention effectively captures terrain-propagation relationships without explicit physics modeling
 2. **Normalization is critical:** Proper scaling of inputs and outputs is essential for training stability
 3. **Dataset quality matters:** Correcting data pipeline issues yielded the largest accuracy improvements
 4. **Median error of 5 dB:** Half of all predictions are within 5 dB of ITM ground truth
+5. **Runtime remains an unresolved implementation gap:** The current transformer inference path is roughly 120x slower than direct ITM on the benchmarked workload, even though the benchmark excludes CPU→GPU transfer time, and we do not yet know how much of that gap is fundamental versus engineering-related
 
 ### 6.3 Practical Applications
 
-With a median error of 5.00 dB, the current model is suitable for:
-- **Initial site screening:** Quickly evaluate thousands of candidate locations
-- **Coverage visualization:** Generate approximate coverage maps for planning
-- **Comparative analysis:** Rank alternative configurations relative to each other
-- **What-if scenarios:** Rapid iteration on network design parameters
+With a median error of 5.00 dB, the current model is still useful for:
+- **Research prototyping:** Studying whether sequence models can learn terrain-propagation structure from ITM-generated data
+- **Architecture experiments:** Comparing lighter surrogate architectures, distillation strategies, and hybrid physics-informed models
+- **Error analysis:** Identifying which terrain and link configurations remain difficult for learned surrogates
+- **Offline approximation studies:** Exploring tradeoffs between fidelity and model complexity before attempting deployment
 
-For applications requiring higher fidelity (<3 dB error), the model architecture provides a foundation for continued optimization through deeper attention stacks, learning rate scheduling, alternative positional encodings, physics-informed constraints, or ensemble methods.
+For throughput-sensitive applications, the native ITM implementation remains the practical choice today. The learned model becomes deployment-relevant only if its runtime can be reduced substantially without losing accuracy. Whether that requires architectural change, systems engineering improvements, or both remains open.
 
 ### Future Work
 
-Based on the training loss analysis and remaining limitations, the immediate priority is **reducing training loss** through optimization improvements:
+Based on the current results, the immediate priority is **reducing loss and error further while strengthening the concept validation**. Runtime investigation remains important, but it is secondary until we better understand the accuracy ceiling of the current approach:
 
 #### Immediate Next Steps
 
@@ -432,21 +437,25 @@ Based on the training loss analysis and remaining limitations, the immediate pri
 
 3. **Extended training:** With proper learning rate scheduling, train for multiple epochs to drive loss below the current plateau.
 
+4. **Attention analysis:** Visualize cross-attention and self-attention patterns to determine whether the model consistently focuses on terrain regions that are physically relevant to diffraction and obstruction.
+
 #### Architecture Improvements
 
-4. **Deeper transformer encoder:** The current 3-layer encoder may be insufficient to capture ITM's multi-step diffraction calculations. Deeper stacks could improve representational capacity.
+5. **Deeper transformer encoder:** The current 3-layer encoder may be insufficient to capture ITM's multi-step diffraction calculations. Deeper stacks could improve representational capacity, though the associated runtime tradeoff would need to be measured.
 
-5. **Rotary position embeddings (RoPE):** Replace sinusoidal positional encoding with RoPE to better capture relative distances between terrain features.
+6. **Rotary position embeddings (RoPE):** Replace sinusoidal positional encoding with RoPE to better capture relative distances between terrain features.
 
-6. **Cross-attention visualization:** Analyze which terrain positions receive high attention weights for different link configurations, validating the model focuses on propagation-relevant features.
+7. **Smaller/faster architectures:** Reduce model width and depth, evaluate distilled student networks, and test lighter pooling-based models that may retain accuracy with far lower inference cost.
+
+8. **Runtime diagnosis before prescribing fixes:** Perform kernel-level profiling to determine whether the present slowdown is due to attention implementation, padding and masking, nested-tensor behavior, model width, sequence length, or other engineering choices. Mechanisms such as alternative attention kernels, caching-style optimizations where applicable, or export-oriented inference stacks have not yet been evaluated, so we cannot yet say which optimizations would materially help.
 
 #### Data and Generalization
 
-7. **Data augmentation:** Terrain profile reversal (swapping TX and RX) should yield identical path loss, providing free augmentation.
+9. **Data augmentation:** Terrain profile reversal (swapping TX and RX) should yield identical path loss, providing free augmentation.
 
-8. **Multi-frequency training:** Extend to cover the full ITM frequency range (20 MHz - 20 GHz).
+10. **Multi-frequency training:** Extend to cover the full ITM frequency range (20 MHz - 20 GHz).
 
-9. **Hybrid physics-informed approach:** Combine learned terrain features with analytical free-space path loss for improved extrapolation.
+11. **Hybrid physics-informed approach:** Combine learned terrain features with analytical free-space path loss for improved extrapolation.
 
 ---
 
@@ -486,6 +495,8 @@ Based on the training loss analysis and remaining limitations, the immediate pri
 ## Appendix B: Dataset Statistics
 
 Dataset available at: https://huggingface.co/datasets/alexcpn/longely_rice_model
+Model weights available at: https://huggingface.co/alexcpn/elevation_transformer/tree/main
+Benchmark artifacts available at: https://huggingface.co/alexcpn/elevation_transformer/tree/main/eval
 
 ```
 Total samples: ~7,830,000
