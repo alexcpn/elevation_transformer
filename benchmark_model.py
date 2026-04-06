@@ -159,6 +159,7 @@ def main():
             _ = model(sample_features, sample_elevation, mask=sample_mask)
 
     # Time model inference
+    log.info("Timing forward pass only on preloaded CUDA tensors (excludes CPU->GPU transfer).")
     torch.cuda.synchronize()
     num_runs = 100
     start_time = time.time()
