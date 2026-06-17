@@ -73,7 +73,10 @@ class PathLossDataset(IterableDataset):
             self.dataset = full_ds.filter(lambda x, idx: (idx % split_mod) in test_mods_set, with_indices=True)
         
         # Buffer size for shuffling (local randomness without loading the whole dataset).
-        self.shuffle_buffer_size = 10000
+        # Kept modest (x num_workers buffers live at once, each holding full elevation arrays)
+        # to avoid the OOM killer SIGKILL-ing DataLoader workers on RAM-limited pods. File order
+        # is already randomized by the source shuffle, so a small row buffer mixes fine.
+        self.shuffle_buffer_size = 2000
         self.shuffle = shuffle
 
         # SOURCE-LEVEL SHUFFLE (before take): the HF stream is ordered (e.g. by file /
@@ -100,12 +103,11 @@ class PathLossDataset(IterableDataset):
             # Note: For streaming datasets, shard() interleaves examples or files.
             # With Parquet files, it's generally efficient enough.
             ds = ds.shard(num_shards=worker_info.num_workers, index=worker_info.id)
-        
-        # Apply shuffling (with a buffer) if enabled
-        # We shuffle *after* sharding to ensure each worker shuffles its own stream
-        if self.shuffle:
-            ds = ds.shuffle(buffer_size=self.shuffle_buffer_size, seed=42)
-        
+
+        # Shuffling is already applied once at the source in __init__ (randomizes file/shard
+        # order + a row buffer). We do NOT shuffle again here: a second buffer only doubled
+        # the time-to-first-batch (and memory) without meaningfully improving randomness.
+
         for row in ds:
             # Elevation: pad/truncate to seq_length, build mask
             elev = row['elevation_profile_m']
