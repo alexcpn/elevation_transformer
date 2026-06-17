@@ -97,6 +97,7 @@ NUM_EPOCHS = 1
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 4
 DROP_LAST = True  # Set False to allow a smaller final batch
+CHECKPOINT_EVERY = 1000  # Save a (single, rotated) checkpoint to the current dir every N steps
 
 # total rows: 32314577
 LIMIT_TRAIN_SAMPLES = None  # Full training over the whole dataset (source-shuffled, unbiased)
@@ -345,6 +346,17 @@ for epoch in range(NUM_EPOCHS):
             log.info("---------Validation | Average Validation: %.4f", avg_valid_loss)
             log.info(f"---------Validation | Overestimation (>3dB): {overestimation_count}")
             log.info(f"---------Validation | Underestimation (<-3dB): {underestimation_count}")
+
+        # Periodic checkpoint to the current directory (crash safety on long runs).
+        # Keeps only ONE rotated file (overwrites each time). Atomic: write to a temp file then
+        # os.replace, so a crash mid-save can't corrupt the existing good checkpoint.
+        # Resume from this via RESUME_FROM_WEIGHTS. Saved in CWD as requested.
+        if CHECKPOINT_EVERY and step % CHECKPOINT_EVERY == 0:
+            latest_path = f"./model_weights{datetimestamp}_latest.pth"
+            tmp_path = latest_path + ".tmp"
+            torch.save(model.state_dict(), tmp_path)
+            os.replace(tmp_path, latest_path)  # atomic rename on same filesystem
+            log.info(f"Checkpoint saved (rotated): {latest_path} @ step {step}")
 
         # Check if we've hit the sample limit
         if LIMIT_TRAIN_SAMPLES is not None and num_batches * BATCH_SIZE >= LIMIT_TRAIN_SAMPLES:
