@@ -167,7 +167,7 @@ Important practical lesson:
 
 # Model Architecture
 
-![h:520 center](../model_cross_attention.png)
+![h:520 center](model_cross_attention.png)
 
 - Elevation sequence -> learned embedding + positional encoding
 - Transformer encoder processes terrain tokens
@@ -197,7 +197,7 @@ Normalization was critical:
 
 # Did The Loss Actually Go Down?
 
-![h:380 center](../taining_loss.png)
+![h:380 center](taining_loss.png)
 
 - Yes, sharply at the start
 - Loss dropped from roughly 230 to around 10 very early

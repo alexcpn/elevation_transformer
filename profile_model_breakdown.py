@@ -6,6 +6,7 @@ import os
 import time
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -99,6 +100,8 @@ def build_batch(data_dir, batch_size, seq_length):
             mask = torch.zeros(seq_length, dtype=torch.bool)
             mask[elev_len:] = True
 
+            mean = 0.0
+            std = 0.0
             if elev_len > 0:
                 cropped = elev[:elev_len]
                 mean = cropped.mean()
@@ -107,10 +110,12 @@ def build_batch(data_dir, batch_size, seq_length):
 
             features = torch.tensor(
                 [
-                    float(row.distance_to_ap_m) / 100000.0,
-                    float(row.center_freq_mhz) / 10000.0,
+                    np.log10(float(row.distance_to_ap_m)),  # path loss is logarithmic in distance
+                    np.log10(float(row.center_freq_mhz)),   # path loss is logarithmic in frequency
                     float(row.receiver_ht_m) / 100.0,
                     float(row.accesspoint_ht_m) / 100.0,
+                    float(mean) / 1000.0,                   # absolute elevation level (km)
+                    float(std) / 1000.0,                    # terrain roughness (km)
                 ],
                 dtype=torch.float32,
             )

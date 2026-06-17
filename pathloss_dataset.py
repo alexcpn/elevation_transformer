@@ -8,6 +8,8 @@ from datasets import load_dataset #huggingface datasets
 
 from torch.utils.data import IterableDataset, get_worker_info
 
+from pathloss_transformer import TARGET_MEAN, TARGET_STD
+
 class PathLossDataset(IterableDataset):
     def __init__(
         self,
@@ -121,18 +123,28 @@ class PathLossDataset(IterableDataset):
             mask[elev_len:] = True
 
             # Construct features tensor
-            # Order: ['distance_to_ap_m', 'center_freq_mhz', 'receiver_ht_m', 'accesspoint_ht_m']
+            # Order: ['distance_to_ap_m', 'center_freq_mhz', 'receiver_ht_m', 'accesspoint_ht_m',
+            #         'elev_mean', 'elev_std']
             # NORMALIZE features to prevent fp16 overflow (values up to 200k cause NaN in mixed precision)
+            # The per-sample elevation mean/std are discarded by instance normalization above, but
+            # absolute terrain height (mean) and roughness (std, ~ITM's terrain irregularity Δh) are
+            # physically relevant to path loss, so feed them back as scalar features (scaled to ~O(1)).
             feat_vals = [
-                row['distance_to_ap_m'] / 100000.0,    # 100km -> 1.0
-                row['center_freq_mhz'] / 10000.0,      # 10GHz -> 1.0  
+                np.log10(row['distance_to_ap_m']),     # path loss is logarithmic in distance
+                np.log10(row['center_freq_mhz']),      # path loss is logarithmic in frequency
                 row['receiver_ht_m'] / 100.0,          # 100m -> 1.0
-                row['accesspoint_ht_m'] / 100.0        # 100m -> 1.0
+                row['accesspoint_ht_m'] / 100.0,       # 100m -> 1.0
+                float(mean) / 1000.0,                  # absolute elevation level (km)
+                float(std) / 1000.0                    # terrain roughness (km)
             ]
             features = torch.tensor(feat_vals, dtype=torch.float32)
 
-            # Target (dB)
-            target = torch.tensor(row['itm_loss_db'], dtype=torch.float32)
+            # Target: normalize dB to ~zero-mean/unit-scale so SmoothL1 gets a usable
+            # gradient (raw 105-202 dB targets stall training). Denormalize with
+            # denormalize_target() before reporting/comparing predictions in dB.
+            target = torch.tensor(
+                (row['itm_loss_db'] - TARGET_MEAN) / TARGET_STD, dtype=torch.float32
+            )
 
             yield features, elevation, target, mask
 

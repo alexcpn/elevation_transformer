@@ -7,7 +7,7 @@ import time
 import argparse
 import logging as log
 from datetime import datetime
-from pathloss_transformer import create_model, load_weights
+from pathloss_transformer import create_model, load_weights, denormalize_target
 import random
 from torch.utils.data import DataLoader
 from pathloss_dataset import PathLossDataset
@@ -90,11 +90,12 @@ def main():
             # Forward pass
             logits = model(input_features, elevation_data)
             # Store results
-            preds_norm = logits.cpu().numpy()
-            targets_norm = target_labels.cpu().numpy()
-            
-            all_predictions.extend(preds_norm)
-            all_targets.extend(targets_norm)
+            # Model/targets are in normalized units -> denormalize back to dB for metrics
+            preds_db = denormalize_target(logits.cpu().numpy())
+            targets_db = denormalize_target(target_labels.cpu().numpy())
+
+            all_predictions.extend(preds_db)
+            all_targets.extend(targets_db)
 
 
     end_time = time.time()

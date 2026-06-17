@@ -10,17 +10,27 @@ import torch.nn.functional as F
 import numpy as np
 import logging as log
 import os
-import glob
 import math
 import json
-import time
-import random
 from datetime import datetime
 from torch.utils.data import DataLoader
 from itertools import chain
 
-from pathloss_transformer import create_model, load_weights
+from pathloss_transformer import create_model, load_weights, denormalize_target, TARGET_STD
 from pathloss_dataset import PathLossDataset
+# Remove HugingFace Dataset sreaming logs
+
+import logging
+from datasets.utils.logging import disable_progress_bar, set_verbosity_error
+
+disable_progress_bar()
+set_verbosity_error()
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("datasets").setLevel(logging.WARNING)
+
 
 # ============================================================
 # CONFIGURATION
@@ -28,7 +38,8 @@ from pathloss_dataset import PathLossDataset
 
 # Set to None to train from scratch, or path to weights file to resume
 RESUME_FROM_WEIGHTS = "weights/model_weights20260204165247.pth" # trained in my laptio
-RESUME_FROM_WEIGHTS = "weights/model_weights20260205140023.pth" #trained in run pod from above
+RESUME_FROM_WEIGHTS = "weights/model_weights20260205140023.pth" #trained in Runpod from above
+RESUME_FROM_WEIGHTS = None # Train from scratch
 
 # Weighted loss: upweight hard examples
 USE_WEIGHTED_LOSS = False  # Disabled - was causing loss spikes
@@ -39,8 +50,10 @@ NUM_EPOCHS = 1
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 4
 DROP_LAST = True  # Set False to allow a smaller final batch
-LIMIT_TRAIN_SAMPLES = 1000  # Set to None for full training, or a number to limit samples
-LIMIT_VAL_SAMPLES = 250000  # Set to None for full validation, or a number to limit (~1% of full dataset)
+
+# total rows: 32314577
+LIMIT_TRAIN_SAMPLES = 500000  # Set to None for full training, or a number to limit samples
+LIMIT_VAL_SAMPLES = 500000  # Set to None for full validation, or a number to limit (~1% of full dataset)
 
 datetimestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -96,7 +109,8 @@ def validate_model(model, val_loader, loss_function, USE_AMP, limit_batches=None
 
             preds_np = preds.float().cpu().numpy()
             targets_np = targets.cpu().numpy()
-            diff = preds_np - targets_np
+            # preds/targets are normalized; scale the difference back to dB for the 3 dB threshold
+            diff = (preds_np - targets_np) * TARGET_STD
             overestimation_count += np.sum(diff > 3.0)   # 3 dB threshold
             underestimation_count += np.sum(diff < -3.0)
 
@@ -109,9 +123,19 @@ def validate_model(model, val_loader, loss_function, USE_AMP, limit_batches=None
 
 # ============================================================
 # DATA SETUP
-# ============================================================
+# # ============================================================
 
-# INPUT_DIR = "/data/itm_loss/"
+
+INPUT_DIR = None  # Set to None to use Huggingface dataset streaming
+ 
+# If you want to download the dataset from Huggingface, uncomment the following lines and run them in your terminal. Make sure you have the `huggingface_hub` package installed and are logged in with `huggingface-cli login`.
+# huggingface-cli download \
+#   alexcpn/longely_rice_model \
+#   --repo-type dataset \
+#   --local-dir /data/itm_loss \
+#   --include "*.parquet"
+  
+INPUT_DIR = "/data/itm_loss/"
 # parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
 # random.seed(42)  # For reproducibility
 # random.shuffle(parquet_files)  # Shuffle to ensure train/val have similar distributions
@@ -136,8 +160,8 @@ def validate_model(model, val_loader, loss_function, USE_AMP, limit_batches=None
 # log.info(f"Validation samples: {len(val_dataset)}")
 
 # Create datasets from Huggingface datasets
-train_dataset = PathLossDataset(None, split="train", max_samples=LIMIT_TRAIN_SAMPLES)
-val_dataset = PathLossDataset(None, split="val", max_samples=LIMIT_VAL_SAMPLES)
+train_dataset = PathLossDataset(INPUT_DIR, split="train", max_samples=LIMIT_TRAIN_SAMPLES)
+val_dataset = PathLossDataset(INPUT_DIR, split="val", max_samples=LIMIT_VAL_SAMPLES)
 
 # Helper for rebuilding loaders (useful for fallback if multi-worker streaming stalls)
 def build_train_loader(num_workers):
@@ -318,9 +342,9 @@ with torch.no_grad():
         with torch.amp.autocast('cuda', enabled=USE_AMP):
             preds = model(features, elevation, mask=mask)
 
-        # Predictions and targets are already in dB
-        all_predictions_db.extend(preds.float().cpu().numpy())
-        all_targets_db.extend(targets.numpy())
+        # Model/targets are in normalized units -> denormalize back to dB for metrics
+        all_predictions_db.extend(denormalize_target(preds.float().cpu().numpy()))
+        all_targets_db.extend(denormalize_target(targets.numpy()))
 
 all_predictions_db = np.array(all_predictions_db)
 all_targets_db = np.array(all_targets_db)
