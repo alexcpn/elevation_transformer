@@ -17,6 +17,19 @@ How to run
   # Combined:
   python3 train_model.py --input-dir /data/itm_loss --batch-size 128
 
+Download the dataset locally (optional, avoids re-streaming over the network each epoch)
+----------------------------------------------------------------------------------------
+  
+  # Download every parquet shard into /data/itm_loss (~tens of GB; pick any local dir):
+  hf download \
+      alexcpn/longely_rice_model \
+      --repo-type dataset \
+      --local-dir /data/itm_loss \
+      --include "*.parquet"
+
+  # Then point training at it:
+  python3 train_model.py --input-dir /data/itm_loss
+
 Options:
   --batch-size INT   Training/validation batch size (default: BATCH_SIZE below, 64)
   --input-dir  STR   Local parquet directory. Default None => stream from
@@ -87,7 +100,7 @@ DROP_LAST = True  # Set False to allow a smaller final batch
 
 # total rows: 32314577
 LIMIT_TRAIN_SAMPLES = None  # Full training over the whole dataset (source-shuffled, unbiased)
-LIMIT_VAL_SAMPLES = 500000  # Set to None for full validation, or a number to limit (~1% of full dataset)
+LIMIT_VAL_SAMPLES = None  # Set to None for full validation, or a number to limit (~1% of full dataset)
 
 datetimestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 

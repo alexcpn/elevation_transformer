@@ -8,3 +8,9 @@ dependencies = [
     "datasets>=4.5.0",
     "pandas>=2.3.3",
 ]
+
+# This project is a set of run-by-path scripts, not an importable package.
+# Disable setuptools auto-discovery so `pip install -e .` doesn't try to package
+# itm/, logs/, weights/, itm_loss_test/ etc. (flat-layout multi-package error).
+[tool.setuptools]
+py-modules = []
