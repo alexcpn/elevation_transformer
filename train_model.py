@@ -362,7 +362,7 @@ for epoch in range(NUM_EPOCHS):
         # os.replace, so a crash mid-save can't corrupt the existing good checkpoint.
         # Resume from this via RESUME_FROM_WEIGHTS. Saved in CWD as requested.
         if CHECKPOINT_EVERY and step % CHECKPOINT_EVERY == 0:
-            latest_path = f"./model_weights{datetimestamp}_latest.pth"
+            latest_path = f"./weights/model_weights{datetimestamp}_latest.pth"
             tmp_path = latest_path + ".tmp"
             torch.save(model.state_dict(), tmp_path)
             os.replace(tmp_path, latest_path)  # atomic rename on same filesystem
@@ -377,7 +377,7 @@ for epoch in range(NUM_EPOCHS):
                 if avg_recent < EARLY_STOP_LOSS:
                     log.info("Early stop: avg loss over last %d steps = %.6f < %g (step %d).",
                              EARLY_STOP_PATIENCE, avg_recent, EARLY_STOP_LOSS, step)
-                    latest_path = f"./model_weights{datetimestamp}_latest.pth"
+                    latest_path = f"./weights/model_weights{datetimestamp}_latest.pth"
                     tmp_path = latest_path + ".tmp"
                     torch.save(model.state_dict(), tmp_path)
                     os.replace(tmp_path, latest_path)
