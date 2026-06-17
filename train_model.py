@@ -1,9 +1,32 @@
 """
 Path loss transformer training script.
 Uses PathLossDataset with DataLoader for proper shuffling and masking.
-Only elevation data is normalized.
+Elevation and target (ITM loss dB) are normalized; distance/frequency are log10-scaled.
+
+How to run
+----------
+  # Train from scratch, streaming the dataset from Hugging Face (default):
+  python3 train_model.py
+
+  # Override batch size (e.g. on a larger runpod GPU):
+  python3 train_model.py --batch-size 128
+
+  # Train from local parquet files instead of streaming:
+  python3 train_model.py --input-dir /data/itm_loss
+
+  # Combined:
+  python3 train_model.py --input-dir /data/itm_loss --batch-size 128
+
+Options:
+  --batch-size INT   Training/validation batch size (default: BATCH_SIZE below, 64)
+  --input-dir  STR   Local parquet directory. Default None => stream from
+                     Hugging Face (alexcpn/longely_rice_model).
+
+Other settings (epochs, learning rate, sample limits, resume weights) are the
+constants in the CONFIGURATION section below.
 """
 
+import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,13 +69,24 @@ USE_WEIGHTED_LOSS = False  # Disabled - was causing loss spikes
 WEIGHT_SCALE = 0.3
 
 BATCH_SIZE = 64 # for a 6 GB GPU Mempory 64 batch size is fine; Increase it if you have more GPU memory (e.g. 128 for 24 GB GPU), or decrease if you have less memory (e.g. 32 for 4 GB GPU)
+
+# Allow overriding batch size from the command line (handy on runpod), defaulting to BATCH_SIZE above
+parser = argparse.ArgumentParser(description="Train the path loss transformer")
+parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
+                    help=f"Training/validation batch size (default: {BATCH_SIZE})")
+parser.add_argument("--input-dir", type=str, default=None,
+                    help="Directory of local parquet files. Default None = stream from "
+                         "Hugging Face (alexcpn/longely_rice_model)")
+args = parser.parse_args()
+BATCH_SIZE = args.batch_size
+INPUT_DIR = args.input_dir
 NUM_EPOCHS = 1
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 4
 DROP_LAST = True  # Set False to allow a smaller final batch
 
 # total rows: 32314577
-LIMIT_TRAIN_SAMPLES = 500000  # Set to None for full training, or a number to limit samples
+LIMIT_TRAIN_SAMPLES = None  # Full training over the whole dataset (source-shuffled, unbiased)
 LIMIT_VAL_SAMPLES = 500000  # Set to None for full validation, or a number to limit (~1% of full dataset)
 
 datetimestamp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -126,16 +160,16 @@ def validate_model(model, val_loader, loss_function, USE_AMP, limit_batches=None
 # # ============================================================
 
 
-INPUT_DIR = None  # Set to None to use Huggingface dataset streaming
- 
+# INPUT_DIR comes from --input-dir (default None = stream from Hugging Face).
+#
 # If you want to download the dataset from Huggingface, uncomment the following lines and run them in your terminal. Make sure you have the `huggingface_hub` package installed and are logged in with `huggingface-cli login`.
 # huggingface-cli download \
 #   alexcpn/longely_rice_model \
 #   --repo-type dataset \
 #   --local-dir /data/itm_loss \
 #   --include "*.parquet"
-  
-INPUT_DIR = "/data/itm_loss/"
+# then run:  python3 train_model.py --input-dir /data/itm_loss
+log.info(f"INPUT_DIR: {INPUT_DIR if INPUT_DIR else 'None (Hugging Face streaming)'}")
 # parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
 # random.seed(42)  # For reproducibility
 # random.shuffle(parquet_files)  # Shuffle to ensure train/val have similar distributions
@@ -398,3 +432,4 @@ benchmark_file = f"./logs/benchmark_{datetimestamp}.json"
 with open(benchmark_file, "w") as f:
     json.dump(benchmark_results, f, indent=2)
 log.info(f"Benchmark results saved to {benchmark_file}")
+log.info(f"Loss log file: {loss_log_file}")

@@ -32,7 +32,7 @@ class PathLossDataset(IterableDataset):
             file_list: Optional list of specific parquet file paths.
                        If None, uses all parquet files in parquet_dir.
             seq_length: Fixed sequence length for elevation (pad/truncate)
-            split: "train" (80%), "val" (10%), or "test" (10%) - only used for HF dataset
+            split: "train", "val", or "test" - modular index split applied to both HF and local parquet
             max_samples: Optional limit on number of samples (for quick benchmarking)
         """
         self.seq_length = seq_length
@@ -49,36 +49,47 @@ class PathLossDataset(IterableDataset):
         if files is None or len(files) == 0:
             print(f"No parquet files found. Loading from HF dataset (split={split})")
             full_ds = load_dataset("alexcpn/longely_rice_model", split="train", streaming=True)
-            
-            # Apply split using modular arithmetic on indices
-            # Default: 98% train / 1% val / 1% test (split_mod=100, val_mods=(0,), test_mods=(1,))
-            val_mods_set = set(val_mods)
-            test_mods_set = set(test_mods)
-            if split == "train":
-                self.dataset = full_ds.filter(
-                    lambda x, idx: (idx % split_mod) not in val_mods_set and (idx % split_mod) not in test_mods_set,
-                    with_indices=True,
-                )
-            elif split == "val":
-                self.dataset = full_ds.filter(lambda x, idx: (idx % split_mod) in val_mods_set, with_indices=True)
-            else:  # test
-                self.dataset = full_ds.filter(lambda x, idx: (idx % split_mod) in test_mods_set, with_indices=True)
-            
             self.n_files = 4741  # approximate file count for full HF dataset (~26.7M samples)
         else:
-            print(f"Loading parquet files from {parquet_dir}")   
-            self.dataset = load_dataset("parquet", data_files=files, split="train", streaming=True)
+            print(f"Loading parquet files from {parquet_dir}")
+            full_ds = load_dataset("parquet", data_files=files, split="train", streaming=True)
             self.n_files = len(files)
+
+        # Apply train/val/test split using modular arithmetic on the (original-order) index.
+        # Applied to BOTH the HF and the local-parquet streams so val/test never leak into the
+        # train set. The split is deterministic per row (files are sorted), so separate
+        # PathLossDataset instances for train/val/test stay mutually disjoint.
+        # Default: split_mod=100, val_mods=(0,), test_mods=(1,) -> 98% train / 1% val / 1% test.
+        val_mods_set = set(val_mods)
+        test_mods_set = set(test_mods)
+        if split == "train":
+            self.dataset = full_ds.filter(
+                lambda x, idx: (idx % split_mod) not in val_mods_set and (idx % split_mod) not in test_mods_set,
+                with_indices=True,
+            )
+        elif split == "val":
+            self.dataset = full_ds.filter(lambda x, idx: (idx % split_mod) in val_mods_set, with_indices=True)
+        else:  # test
+            self.dataset = full_ds.filter(lambda x, idx: (idx % split_mod) in test_mods_set, with_indices=True)
         
-        # Apply max_samples limit if specified
+        # Buffer size for shuffling (local randomness without loading the whole dataset).
+        self.shuffle_buffer_size = 10000
+        self.shuffle = shuffle
+
+        # SOURCE-LEVEL SHUFFLE (before take): the HF stream is ordered (e.g. by file /
+        # difficulty - the first ~20k rows max out at ~201 dB while the full data reaches
+        # ~318 dB). Taking the first max_samples therefore grabs a biased low-loss slice,
+        # and a full pass feeds easy->hard batches (loss spikes / forgetting). Shuffling here
+        # also randomizes the file/shard order, so each split draws a representative sample.
+        # Applied AFTER the split filter so train/val/test stay disjoint (the split is keyed
+        # on the original stream index, independent of this shuffle).
+        if self.shuffle:
+            self.dataset = self.dataset.shuffle(seed=42, buffer_size=self.shuffle_buffer_size)
+
+        # Apply max_samples limit if specified (now over the shuffled stream)
         if max_samples is not None:
             self.dataset = self.dataset.take(max_samples)
             print(f"Limiting dataset to {max_samples} samples")
-        
-        # Set a buffer size for shuffling.
-        # This provides local randomness without loading the whole dataset.
-        self.shuffle_buffer_size = 10000
-        self.shuffle = shuffle
 
     def __iter__(self):
         worker_info = get_worker_info()
