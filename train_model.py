@@ -51,6 +51,7 @@ import json
 from datetime import datetime
 from torch.utils.data import DataLoader
 from itertools import chain
+from collections import deque
 
 from pathloss_transformer import create_model, load_weights, denormalize_target, TARGET_STD
 from pathloss_dataset import PathLossDataset
@@ -98,6 +99,12 @@ LEARNING_RATE = 1e-4
 NUM_WORKERS = 4
 DROP_LAST = True  # Set False to allow a smaller final batch
 CHECKPOINT_EVERY = 1000  # Save a (single, rotated) checkpoint to the current dir every N steps
+
+# Early stopping: exit once the loss is very small and stable. Uses a moving average over the
+# last EARLY_STOP_PATIENCE steps (not a single noisy batch). The loss is normalized SmoothL1;
+# very roughly RMSE(dB) ~= sqrt(2*loss)*TARGET_STD, so 0.001 ~ 1.5 dB. Set to None to disable.
+EARLY_STOP_LOSS = 0.001
+EARLY_STOP_PATIENCE = 100
 
 # total rows: 32314577
 LIMIT_TRAIN_SAMPLES = None  # Full training over the whole dataset (source-shuffled, unbiased)
@@ -272,6 +279,9 @@ def iter_train_batches(loader):
         return None
     return chain([first_batch], train_iter)
 
+stop_training = False
+recent_losses = deque(maxlen=EARLY_STOP_PATIENCE)  # moving window for early stopping
+
 for epoch in range(NUM_EPOCHS):
     model.train()
     epoch_loss = 0.0
@@ -358,11 +368,30 @@ for epoch in range(NUM_EPOCHS):
             os.replace(tmp_path, latest_path)  # atomic rename on same filesystem
             log.info(f"Checkpoint saved (rotated): {latest_path} @ step {step}")
 
+        # Early stopping: exit when the moving-average loss is very small (stable, not a single
+        # lucky batch). Saves a final rotated checkpoint before leaving the loop.
+        if EARLY_STOP_LOSS is not None:
+            recent_losses.append(loss.item())
+            if len(recent_losses) == recent_losses.maxlen:
+                avg_recent = sum(recent_losses) / len(recent_losses)
+                if avg_recent < EARLY_STOP_LOSS:
+                    log.info("Early stop: avg loss over last %d steps = %.6f < %g (step %d).",
+                             EARLY_STOP_PATIENCE, avg_recent, EARLY_STOP_LOSS, step)
+                    latest_path = f"./model_weights{datetimestamp}_latest.pth"
+                    tmp_path = latest_path + ".tmp"
+                    torch.save(model.state_dict(), tmp_path)
+                    os.replace(tmp_path, latest_path)
+                    log.info(f"Checkpoint saved (rotated): {latest_path} @ step {step}")
+                    stop_training = True
+                    break
+
         # Check if we've hit the sample limit
         if LIMIT_TRAIN_SAMPLES is not None and num_batches * BATCH_SIZE >= LIMIT_TRAIN_SAMPLES:
             log.info(f"Reached training sample limit ({LIMIT_TRAIN_SAMPLES}), stopping epoch early.")
             break
     log.info(f"Epoch {epoch+1} completed. Average Training Loss: {epoch_loss / num_batches:.4f}")
+    if stop_training:
+        break
  
 log.info("Training completed. Starting final validation...")
 # ============================================================
