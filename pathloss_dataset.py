@@ -46,12 +46,21 @@ class PathLossDataset(IterableDataset):
         elif parquet_dir is not None:
             files = sorted(glob.glob(os.path.join(parquet_dir, "*.parquet")))
         
-        if files is None or len(files) == 0:
-            print(f"No parquet files found. Loading from HF dataset (split={split})")
+        if files is not None and len(files) == 0:
+            # A local source (parquet_dir/file_list) was explicitly requested but nothing was
+            # found. Fail loudly instead of silently streaming/downloading from Hugging Face.
+            raise FileNotFoundError(
+                f"No '*.parquet' files found for the requested local source "
+                f"(parquet_dir={parquet_dir!r}, file_list given={file_list is not None}). "
+                f"Refusing to fall back to HF streaming. Check the path, or omit --input-dir to stream."
+            )
+
+        if files is None:
+            print(f"No local dir given. Streaming from HF dataset (split={split})")
             full_ds = load_dataset("alexcpn/longely_rice_model", split="train", streaming=True)
             self.n_files = 4741  # approximate file count for full HF dataset (~26.7M samples)
         else:
-            print(f"Loading parquet files from {parquet_dir}")
+            print(f"Loading {len(files)} parquet files locally (no streaming) from {parquet_dir}")
             full_ds = load_dataset("parquet", data_files=files, split="train", streaming=True)
             self.n_files = len(files)
 

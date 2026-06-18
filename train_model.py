@@ -352,7 +352,7 @@ for epoch in range(NUM_EPOCHS):
             avg_valid_loss, overestimation_count, underestimation_count, total_val_samples = validate_model(
                 model, val_loader, loss_function, USE_AMP, limit_batches=5
             )
-            log.info("Epoch=%d | Step=%d/%d |---Validation | Validation samples: %d", epoch+1, step, total_val_samples)
+            log.info("Epoch=%d | Step=%d/%d |---Validation | Validation samples: %d", epoch+1, step, total_steps, total_val_samples)
             log.info("---------Validation | Average Validation: %.4f", avg_valid_loss)
             log.info(f"---------Validation | Overestimation (>3dB): {overestimation_count}")
             log.info(f"---------Validation | Underestimation (<-3dB): {underestimation_count}")
