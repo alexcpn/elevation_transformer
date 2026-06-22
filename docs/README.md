@@ -13,3 +13,11 @@ npx @marp-team/marp-cli /ssd/elevation_transformer/slides/itm_transformer_talk.m
 ```bash
 npx @marp-team/marp-cli /ssd/elevation_transformer/slides/itm_transformer_talk.md --pptx --output /ssd/elevation_transformer/slides/itm_transformer_talk.pptx
 ```
+
+# PDF
+
+Run this from the root
+
+```
+pandoc --pdf-engine=xelatex README.md  -o docs/paper.pdf
+```

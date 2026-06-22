@@ -215,11 +215,12 @@ Interpretation:
 
 | Metric | Value |
 |---|---:|
-| RMSE | 17.85 dB |
-| MAE | 10.94 dB |
-| Median Error | 5.00 dB |
-| 90th Percentile Error | 31.02 dB |
-| 95th Percentile Error | 41.59 dB |
+| RMSE | 11.01 dB |
+| MAE | 6.70 dB |
+| Median Error | 3.80 dB |
+| 90th Percentile Error | 15.41 dB |
+
+(Revised pipeline; full-distribution validation set, fewer samples — see paper Section 4.7)
 
 Improvement over iterations:
 
@@ -228,6 +229,7 @@ Improvement over iterations:
 | Baseline, no normalization | 62.02 dB |
 | + input / target normalization | 42.62 dB |
 | + dataset correction and full training | 17.85 dB |
+| + revised pipeline (fewer samples) | 11.01 dB |
 
 ---
 
@@ -237,7 +239,7 @@ Improvement over iterations:
 - Attention is a reasonable mechanism for this problem
 - Training loss decreases materially with the right pipeline
 - Data quality is a first-order issue
-- Median error of 5 dB is already meaningful for a concept-validation result
+- Median error of ~4 dB is already meaningful for a concept-validation result
 
 This is the core claim of the work.
 
