@@ -1,26 +1,73 @@
 """
 Path loss transformer training script.
 Uses PathLossDataset with DataLoader for proper shuffling and masking.
-Only elevation data is normalized.
+Elevation and target (ITM loss dB) are normalized; distance/frequency are log10-scaled.
+
+How to run
+----------
+  # Train from scratch, streaming the dataset from Hugging Face (default):
+  python3 train_model.py
+
+  # Override batch size (e.g. on a larger runpod GPU):
+  python3 train_model.py --batch-size 128
+
+  # Train from local parquet files instead of streaming:
+  python3 train_model.py --input-dir /data/itm_loss
+
+  # Combined:
+  python3 train_model.py --input-dir /data/itm_loss --batch-size 128
+
+Download the dataset locally (optional, avoids re-streaming over the network each epoch)
+----------------------------------------------------------------------------------------
+  
+  # Download every parquet shard into /data/itm_loss (~tens of GB; pick any local dir):
+  hf download \
+      alexcpn/longely_rice_model \
+      --repo-type dataset \
+      --local-dir /data/itm_loss \
+      --include "*.parquet"
+
+  # Then point training at it:
+  python3 train_model.py --input-dir /data/itm_loss
+
+Options:
+  --batch-size INT   Training/validation batch size (default: BATCH_SIZE below, 64)
+  --input-dir  STR   Local parquet directory. Default None => stream from
+                     Hugging Face (alexcpn/longely_rice_model).
+
+Other settings (epochs, learning rate, sample limits, resume weights) are the
+constants in the CONFIGURATION section below.
 """
 
+import argparse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import logging as log
 import os
-import glob
 import math
 import json
-import time
-import random
 from datetime import datetime
 from torch.utils.data import DataLoader
 from itertools import chain
+from collections import deque
 
-from pathloss_transformer import create_model, load_weights
+from pathloss_transformer import create_model, load_weights, denormalize_target, TARGET_STD
 from pathloss_dataset import PathLossDataset
+# Remove HugingFace Dataset sreaming logs
+
+import logging
+from datasets.utils.logging import disable_progress_bar, set_verbosity_error
+
+disable_progress_bar()
+set_verbosity_error()
+
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+logging.getLogger("datasets").setLevel(logging.WARNING)
+
 
 # ============================================================
 # CONFIGURATION
@@ -28,19 +75,40 @@ from pathloss_dataset import PathLossDataset
 
 # Set to None to train from scratch, or path to weights file to resume
 RESUME_FROM_WEIGHTS = "weights/model_weights20260204165247.pth" # trained in my laptio
-RESUME_FROM_WEIGHTS = "weights/model_weights20260205140023.pth" #trained in run pod from above
+RESUME_FROM_WEIGHTS = "weights/model_weights20260205140023.pth" #trained in Runpod from above
+RESUME_FROM_WEIGHTS = None # Train from scratch
 
 # Weighted loss: upweight hard examples
 USE_WEIGHTED_LOSS = False  # Disabled - was causing loss spikes
 WEIGHT_SCALE = 0.3
 
 BATCH_SIZE = 64 # for a 6 GB GPU Mempory 64 batch size is fine; Increase it if you have more GPU memory (e.g. 128 for 24 GB GPU), or decrease if you have less memory (e.g. 32 for 4 GB GPU)
+
+# Allow overriding batch size from the command line (handy on runpod), defaulting to BATCH_SIZE above
+parser = argparse.ArgumentParser(description="Train the path loss transformer")
+parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
+                    help=f"Training/validation batch size (default: {BATCH_SIZE})")
+parser.add_argument("--input-dir", type=str, default=None,
+                    help="Directory of local parquet files. Default None = stream from "
+                         "Hugging Face (alexcpn/longely_rice_model)")
+args = parser.parse_args()
+BATCH_SIZE = args.batch_size
+INPUT_DIR = args.input_dir
 NUM_EPOCHS = 1
 LEARNING_RATE = 1e-4
 NUM_WORKERS = 4
 DROP_LAST = True  # Set False to allow a smaller final batch
-LIMIT_TRAIN_SAMPLES = 1000  # Set to None for full training, or a number to limit samples
-LIMIT_VAL_SAMPLES = 250000  # Set to None for full validation, or a number to limit (~1% of full dataset)
+CHECKPOINT_EVERY = 1000  # Save a (single, rotated) checkpoint to the current dir every N steps
+
+# Early stopping: exit once the loss is very small and stable. Uses a moving average over the
+# last EARLY_STOP_PATIENCE steps (not a single noisy batch). The loss is normalized SmoothL1;
+# very roughly RMSE(dB) ~= sqrt(2*loss)*TARGET_STD, so 0.001 ~ 1.5 dB. Set to None to disable.
+EARLY_STOP_LOSS = 0.001
+EARLY_STOP_PATIENCE = 100
+
+# total rows: 32314577
+LIMIT_TRAIN_SAMPLES = None  # Full training over the whole dataset (source-shuffled, unbiased)
+LIMIT_VAL_SAMPLES = None  # Set to None for full validation, or a number to limit (~1% of full dataset)
 
 datetimestamp = datetime.now().strftime("%Y%m%d%H%M%S")
 
@@ -96,7 +164,8 @@ def validate_model(model, val_loader, loss_function, USE_AMP, limit_batches=None
 
             preds_np = preds.float().cpu().numpy()
             targets_np = targets.cpu().numpy()
-            diff = preds_np - targets_np
+            # preds/targets are normalized; scale the difference back to dB for the 3 dB threshold
+            diff = (preds_np - targets_np) * TARGET_STD
             overestimation_count += np.sum(diff > 3.0)   # 3 dB threshold
             underestimation_count += np.sum(diff < -3.0)
 
@@ -109,9 +178,19 @@ def validate_model(model, val_loader, loss_function, USE_AMP, limit_batches=None
 
 # ============================================================
 # DATA SETUP
-# ============================================================
+# # ============================================================
 
-# INPUT_DIR = "/data/itm_loss/"
+
+# INPUT_DIR comes from --input-dir (default None = stream from Hugging Face).
+#
+# If you want to download the dataset from Huggingface, uncomment the following lines and run them in your terminal. Make sure you have the `huggingface_hub` package installed and are logged in with `huggingface-cli login`.
+# huggingface-cli download \
+#   alexcpn/longely_rice_model \
+#   --repo-type dataset \
+#   --local-dir /data/itm_loss \
+#   --include "*.parquet"
+# then run:  python3 train_model.py --input-dir /data/itm_loss
+log.info(f"INPUT_DIR: {INPUT_DIR if INPUT_DIR else 'None (Hugging Face streaming)'}")
 # parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
 # random.seed(42)  # For reproducibility
 # random.shuffle(parquet_files)  # Shuffle to ensure train/val have similar distributions
@@ -136,8 +215,8 @@ def validate_model(model, val_loader, loss_function, USE_AMP, limit_batches=None
 # log.info(f"Validation samples: {len(val_dataset)}")
 
 # Create datasets from Huggingface datasets
-train_dataset = PathLossDataset(None, split="train", max_samples=LIMIT_TRAIN_SAMPLES)
-val_dataset = PathLossDataset(None, split="val", max_samples=LIMIT_VAL_SAMPLES)
+train_dataset = PathLossDataset(INPUT_DIR, split="train", max_samples=LIMIT_TRAIN_SAMPLES)
+val_dataset = PathLossDataset(INPUT_DIR, split="val", max_samples=LIMIT_VAL_SAMPLES)
 
 # Helper for rebuilding loaders (useful for fallback if multi-worker streaming stalls)
 def build_train_loader(num_workers):
@@ -199,6 +278,9 @@ def iter_train_batches(loader):
     if first_batch is None:
         return None
     return chain([first_batch], train_iter)
+
+stop_training = False
+recent_losses = deque(maxlen=EARLY_STOP_PATIENCE)  # moving window for early stopping
 
 for epoch in range(NUM_EPOCHS):
     model.train()
@@ -270,16 +352,46 @@ for epoch in range(NUM_EPOCHS):
             avg_valid_loss, overestimation_count, underestimation_count, total_val_samples = validate_model(
                 model, val_loader, loss_function, USE_AMP, limit_batches=5
             )
-            log.info("Epoch=%d | Step=%d/%d |---Validation | Validation samples: %d", epoch+1, step, total_val_samples)
+            log.info("Epoch=%d | Step=%d/%d |---Validation | Validation samples: %d", epoch+1, step, total_steps, total_val_samples)
             log.info("---------Validation | Average Validation: %.4f", avg_valid_loss)
             log.info(f"---------Validation | Overestimation (>3dB): {overestimation_count}")
             log.info(f"---------Validation | Underestimation (<-3dB): {underestimation_count}")
+
+        # Periodic checkpoint to the current directory (crash safety on long runs).
+        # Keeps only ONE rotated file (overwrites each time). Atomic: write to a temp file then
+        # os.replace, so a crash mid-save can't corrupt the existing good checkpoint.
+        # Resume from this via RESUME_FROM_WEIGHTS. Saved in CWD as requested.
+        if CHECKPOINT_EVERY and step % CHECKPOINT_EVERY == 0:
+            latest_path = f"./weights/model_weights{datetimestamp}_latest.pth"
+            tmp_path = latest_path + ".tmp"
+            torch.save(model.state_dict(), tmp_path)
+            os.replace(tmp_path, latest_path)  # atomic rename on same filesystem
+            log.info(f"Checkpoint saved (rotated): {latest_path} @ step {step}")
+
+        # Early stopping: exit when the moving-average loss is very small (stable, not a single
+        # lucky batch). Saves a final rotated checkpoint before leaving the loop.
+        if EARLY_STOP_LOSS is not None:
+            recent_losses.append(loss.item())
+            if len(recent_losses) == recent_losses.maxlen:
+                avg_recent = sum(recent_losses) / len(recent_losses)
+                if avg_recent < EARLY_STOP_LOSS:
+                    log.info("Early stop: avg loss over last %d steps = %.6f < %g (step %d).",
+                             EARLY_STOP_PATIENCE, avg_recent, EARLY_STOP_LOSS, step)
+                    latest_path = f"./weights/model_weights{datetimestamp}_latest.pth"
+                    tmp_path = latest_path + ".tmp"
+                    torch.save(model.state_dict(), tmp_path)
+                    os.replace(tmp_path, latest_path)
+                    log.info(f"Checkpoint saved (rotated): {latest_path} @ step {step}")
+                    stop_training = True
+                    break
 
         # Check if we've hit the sample limit
         if LIMIT_TRAIN_SAMPLES is not None and num_batches * BATCH_SIZE >= LIMIT_TRAIN_SAMPLES:
             log.info(f"Reached training sample limit ({LIMIT_TRAIN_SAMPLES}), stopping epoch early.")
             break
     log.info(f"Epoch {epoch+1} completed. Average Training Loss: {epoch_loss / num_batches:.4f}")
+    if stop_training:
+        break
  
 log.info("Training completed. Starting final validation...")
 # ============================================================
@@ -318,9 +430,9 @@ with torch.no_grad():
         with torch.amp.autocast('cuda', enabled=USE_AMP):
             preds = model(features, elevation, mask=mask)
 
-        # Predictions and targets are already in dB
-        all_predictions_db.extend(preds.float().cpu().numpy())
-        all_targets_db.extend(targets.numpy())
+        # Model/targets are in normalized units -> denormalize back to dB for metrics
+        all_predictions_db.extend(denormalize_target(preds.float().cpu().numpy()))
+        all_targets_db.extend(denormalize_target(targets.numpy()))
 
 all_predictions_db = np.array(all_predictions_db)
 all_targets_db = np.array(all_targets_db)
@@ -374,3 +486,4 @@ benchmark_file = f"./logs/benchmark_{datetimestamp}.json"
 with open(benchmark_file, "w") as f:
     json.dump(benchmark_results, f, indent=2)
 log.info(f"Benchmark results saved to {benchmark_file}")
+log.info(f"Loss log file: {loss_log_file}")

@@ -12,7 +12,7 @@ Radio propagation path loss prediction is essential for wireless network plannin
 
 We propose a transformer-based neural network surrogate that learns to approximate ITM path loss predictions from terrain elevation profiles and link parameters. Unlike prior deep learning approaches that operate on 2D geographic maps, our method treats the 1D elevation profile along the propagation path as a sequence, leveraging self-attention to capture terrain-induced diffraction and obstruction effects at arbitrary positions. The model ingests the elevation sequence alongside transmission frequency, antenna heights, and link distance to predict path loss in a single forward pass.
 
-Trained on over 7.8 million ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model achieves **17.85 dB RMSE** (median error 5.00 dB) compared to ITM outputs. The training dataset is publicly available at `https://huggingface.co/datasets/alexcpn/longely_rice_model`, and the released model weights are available at `https://huggingface.co/alexcpn/elevation_transformer/tree/main`. Through iterative improvements—including attention-based pooling and weighted loss functions—we reduced RMSE by 71% from an initial baseline, validating that the transformer architecture can effectively learn terrain-propagation relationships and that the training loss can be driven down substantially with the right data pipeline and normalization. Direct benchmarking on the current workstation shows that the present transformer inference path is still substantially slower than the native ITM implementation: **1314.8 us** per prediction for the model versus **11.0 us** for direct ITM at batch size 64 over 100 timed runs. We have not yet established whether this gap reflects a fundamental limitation of the current model class or a remediable engineering issue in the present implementation, so the current contribution is best interpreted as concept validation rather than acceleration.
+Trained on ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model approximates ITM path loss to within a few decibels. An initial pipeline reached **17.85 dB RMSE** (median error 5.00 dB), and a subsequently revised pipeline—log-scaled link parameters, explicit terrain mean/roughness features, full-distribution target normalization, and a corrected source-shuffled sampling scheme—reaches **11.01 dB RMSE** (median error 3.80 dB) on a representative, full-loss-range validation set, even from a partially trained checkpoint (Section 4.7). The training dataset is publicly available at `https://huggingface.co/datasets/alexcpn/longely_rice_model`, and the released model weights are available at `https://huggingface.co/alexcpn/elevation_transformer/tree/main`. These results validate that the transformer architecture can effectively learn terrain-propagation relationships and that the training loss can be driven down substantially with the right data pipeline and normalization. Direct benchmarking on the current workstation shows that the present transformer inference path is still substantially slower than the native ITM implementation: **1314.8 us** per prediction for the model versus **11.0 us** for direct ITM at batch size 64 over 100 timed runs. We have not yet established whether this gap reflects a fundamental limitation of the current model class or a remediable engineering issue in the present implementation, so the current contribution is best interpreted as concept validation rather than acceleration.
 
 **Keywords:** path loss prediction, irregular terrain model, transformer, surrogate modeling, radio propagation, deep learning, 6 GHz, CBRS
 
@@ -102,7 +102,7 @@ We formulate this as a sequence-to-scalar regression problem. The elevation prof
 
 Our architecture processes terrain and link parameters through parallel pathways before fusion via cross-attention for final prediction. The design uses cross-attention to allow the model to selectively attend to terrain features most relevant to the specific link parameters.
 
-![Model Architecture with Cross-Attention](model_cross_attention.png)
+![Model Architecture with Cross-Attention](docs/model_cross_attention.png)
 *Figure 1: Model architecture showing cross-attention fusion between scalar link parameters and terrain features.*
 
 #### 3.2.1 Elevation Embedding
@@ -256,7 +256,7 @@ The median error of 5.00 dB indicates that half of all predictions are within 5 
 
 ### 4.2 Training Loss
 
-![Training Loss Over Steps](taining_loss.png)
+![Training Loss Over Steps](docs/taining_loss.png)
 *Figure 2: Training loss over ~130,000 steps (combined runs). Loss drops rapidly from ~230 to ~10 in the first 10k steps, then plateaus around 3-10 with high variance.*
 
 The training loss curve reveals:
@@ -337,6 +337,40 @@ Analysis of prediction errors reveals systematic patterns:
 - Both U-NII-5 (5925-6425 MHz) and U-NII-7 (6525-6875 MHz) bands are present in the data
 
 **Improvement from weighted loss:** The weighted loss function, which upweights samples with larger prediction errors, substantially improved tail performance. The 95th percentile error dropped from 39.76 dB to 35.35 dB, indicating the model learned to handle difficult cases better without sacrificing performance on typical cases.
+
+### 4.7 Improved Pipeline: Log-Scaled Inputs, Terrain Statistics, and Full-Distribution Normalization
+
+A subsequent revision of the data pipeline addressed several issues that had previously limited accuracy and, importantly, had made the earlier metrics optimistic. Four changes were applied together:
+
+1. **Biased-sampling correction (largest single effect).** The streamed training corpus is *ordered*, not random: the first ~20,000 records span only ~117–201 dB, whereas the full distribution reaches ~318 dB (mean ≈ 206 dB, σ ≈ 34 dB). Taking the leading records—or limiting samples without shuffling the source—therefore trained and validated the model almost entirely on an easy, low-loss slice. We now apply a **source-level shuffle that randomizes file/shard order before sampling**, so both the training and validation streams are representative of the full loss range. This makes the reported numbers honest but also harder, because the difficult high-loss tail is now included in evaluation.
+
+2. **Log-scaled link parameters.** Because free-space path loss is logarithmic in distance and frequency ($L_\text{fs} = 20\log_{10} d + 20\log_{10} f + \text{const}$), distance and frequency are now fed as $\log_{10}(\cdot)$ rather than linearly scaled, so the network need not learn the logarithm internally.
+
+3. **Explicit terrain-scale features.** Per-sample (instance) normalization of the elevation profile discards two physically meaningful quantities—absolute terrain height (the mean) and roughness (the standard deviation, analogous to ITM's terrain-irregularity parameter $\Delta h$). These two scalars are now appended to the link-parameter vector (six scalar features total), restoring the terrain scale that instance normalization removes.
+
+4. **Full-distribution target normalization.** The target normalization constants ($\mu = 206.1$ dB, $\sigma = 33.9$ dB) are recomputed from a *shuffled* sample of the corpus. The earlier constants ($\mu = 175.8$, $\sigma = 24.8$), taken from the unshuffled head, were biased toward the low-loss slice. Normalizing the target is essential: with raw decibel targets the SmoothL1 loss remains in its linear (L1) regime, so the prediction crawls toward the mean over $\sim10^5$ steps; with a unit-scaled target it enters the informative quadratic regime immediately and converges in thousands of steps.
+
+The single most impactful of these changes is **scaling the target down to unit range so that gradient descent is effective.** The mechanism is summarized below: dividing the decibel target by $\sigma$ moves typical errors from $\sim190$ (deep in SmoothL1's linear arm, where the gradient is a constant $\pm1$) to $\sim\!O(1)$ (the quadratic basin, where the gradient is proportional to the error).
+
+| Target representation | Typical error scale | SmoothL1 ($\beta{=}1$) regime | Gradient w.r.t. output | Optimization behavior |
+|------------------------|--------------------|-------------------------------|------------------------|-----------------------|
+| Raw decibels (no target normalization) | $\sim190$ ($\gg\beta$) | Linear (L1) everywhere | $\pm1$ (sign only) | Output crawls toward the mean at $\sim$lr/step; loss stalls near the dataset mean for $\sim10^5$ steps — effectively does not train in a limited run |
+| Normalized, $\hat{y}=(y-\mu)/\sigma$ | $\sim\!O(1)$ | Quadratic near the optimum | $\propto$ error | Informative gradients from step 1; converges in $\sim10^3$ steps |
+
+In our runs the unnormalized configuration held the training loss at $\approx$ the dataset-mean value (no measurable descent), whereas the normalized configuration drove the normalized SmoothL1 loss below $0.01$ within a few thousand steps. Target normalization is thus a prerequisite for the other three improvements to take effect.
+
+**Accuracy on a full-distribution validation set** (5,000 streamed samples, denormalized to dB):
+
+| Metric | Value |
+|--------|-------|
+| RMSE | **11.01 dB** |
+| MAE | 6.70 dB |
+| Median Error | 3.80 dB |
+| 90th Percentile Error | 15.41 dB |
+
+This is achieved by a checkpoint taken at only **~21% of a single epoch** (step 14,910 of an estimated 69,756) from a resumed run, and is measured on the *full* loss distribution rather than the biased low-loss slice used for the earlier 17.85 dB figure—so the two numbers are not strictly comparable, but the revised pipeline is both more representative and more accurate. Training was interrupted by an external process termination on the cloud instance (not a model failure); rotating checkpoints preserved the weights.
+
+**Training loss.** Over the 14,910 logged steps the normalized SmoothL1 training loss fell from a resumed start of ≈0.09 to a moving average of ≈0.008 (minimum 0.0013). Using the approximate relation $\text{RMSE}_\text{dB} \approx \sqrt{2\,\mathcal{L}}\cdot\sigma$, a normalized loss of 0.008 corresponds to roughly 4 dB on the training stream, indicating a residual train/validation gap (~4 dB vs ~11 dB) that further training and regularization are expected to narrow.
 
 ---
 

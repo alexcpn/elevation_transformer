@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import math
 
 # ============================================================
@@ -10,6 +9,25 @@ import math
 # Elevation normalization (applied in dataset)
 ELEV_MEAN = 805.0
 ELEV_STD = 736.0
+
+# Target (ITM path loss, dB) normalization (applied in dataset).
+# Computed from 100k SHUFFLED samples of alexcpn/longely_rice_model (full range ~117-318 dB).
+# NOTE: the HF stream is ordered, so an unshuffled head (e.g. first 20k) is a biased
+# low-loss slice (max ~202) and gives wrong stats (mean 175.8 / std 24.8) - use shuffled.
+# Without this the raw targets keep SmoothL1 in its L1 regime, so the output cannot climb
+# off ~0 and the loss stalls near the target mean.
+TARGET_MEAN = 206.1
+TARGET_STD = 33.9
+
+
+def normalize_target(loss_db):
+    """dB -> normalized units (used when building training targets)."""
+    return (loss_db - TARGET_MEAN) / TARGET_STD
+
+
+def denormalize_target(pred):
+    """normalized units -> dB (used to report/compare predictions)."""
+    return pred * TARGET_STD + TARGET_MEAN
 
 # ============================================================
 # MODEL COMPONENTS
@@ -54,7 +72,7 @@ class PathLossModel(nn.Module):
         d_model = 512  # embedding size
         final_size = 1
         num_heads = 8
-        extra_feature_size = 4 # these are the 4 scalar features, frequency, receiver height, accesspoint height, and distance
+        extra_feature_size = 6 # scalar features: distance, frequency, receiver height, accesspoint height, elevation mean, elevation std
         num_layers = 3 # Stack of 3 transformer layers
         dropout = 0.1
 

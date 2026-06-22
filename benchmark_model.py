@@ -7,7 +7,7 @@ import time
 import argparse
 import logging as log
 from datetime import datetime
-from pathloss_transformer import create_model, load_weights
+from pathloss_transformer import create_model, load_weights, denormalize_target
 import random
 from torch.utils.data import DataLoader
 from pathloss_dataset import PathLossDataset
@@ -29,8 +29,11 @@ BATCH_SIZE = 64
 def main():
     parser = argparse.ArgumentParser(description="Benchmark PathLoss Transformer")
     parser.add_argument("--weights", type=str, default="weights/model_weights20260205140023.pth", help="Path to model weights file")
-    parser.add_argument("--batch_size", type=int, default=30, help="Batch size for inference")
-    parser.add_argument("--data_dir", type=str, default="itm_loss", help="Directory containing parquet files")
+    parser.add_argument("--batch_size", type=int, default=384, help="Batch size for inference")
+    parser.add_argument("--input-dir", type=str, default=None,
+                        help="Directory of local parquet files. Default None = stream from "
+                             "Hugging Face (alexcpn/longely_rice_model)")
+    parser.add_argument("--max-samples", type=int, default=20000, help="Number of validation samples to evaluate")
     args = parser.parse_args()
 
     # Find latest weights if not specified
@@ -53,25 +56,10 @@ def main():
     else:
         log.info("torch.compile not available, skipping compilation.")
 
-    # Prepare Data
-    INPUT_DIR = "/data/itm_loss/"
-    parquet_files = sorted(glob.glob(os.path.join(INPUT_DIR, "*.parquet")))
-    random.seed(42)  # For reproducibility
-    random.shuffle(parquet_files)  # Shuffle to ensure train/val have similar distributions
-    nfiles = len(parquet_files)
-    log.info(f"Number of parquet files: {nfiles}")
-
-    # Train/val split by file
-    train_ratio = 0.99
-    split_idx = int(nfiles * train_ratio)
-    parquet_files_train = parquet_files[:split_idx]
-    parquet_files_valid = parquet_files[split_idx:]
-    log.info(f"Train files: {len(parquet_files_train)}")
-    log.info(f"Validation files: {len(parquet_files_valid)}")
-        
-    log.info(f"Found {nfiles} total files. Using {len(parquet_files_valid)} for validation.")
-    #val_dataset = PathLossDataset(INPUT_DIR, file_list=parquet_files_valid[:10])
-    val_dataset = PathLossDataset(None, split="val", max_samples=1000)
+    # Prepare validation data: local parquet dir if --input-dir given, else stream from HF.
+    # The val split (modular index) is applied inside PathLossDataset for both paths.
+    log.info(f"Validation source: {args.input_dir if args.input_dir else 'None (Hugging Face streaming)'}")
+    val_dataset = PathLossDataset(args.input_dir, split="val", max_samples=args.max_samples)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False,
                         num_workers=NUM_WORKERS, pin_memory=True)
     # Benchmarking
@@ -90,11 +78,12 @@ def main():
             # Forward pass
             logits = model(input_features, elevation_data)
             # Store results
-            preds_norm = logits.cpu().numpy()
-            targets_norm = target_labels.cpu().numpy()
-            
-            all_predictions.extend(preds_norm)
-            all_targets.extend(targets_norm)
+            # Model/targets are in normalized units -> denormalize back to dB for metrics
+            preds_db = denormalize_target(logits.cpu().numpy())
+            targets_db = denormalize_target(target_labels.cpu().numpy())
+
+            all_predictions.extend(preds_db)
+            all_targets.extend(targets_db)
 
 
     end_time = time.time()
