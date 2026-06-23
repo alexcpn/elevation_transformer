@@ -93,7 +93,7 @@ We formulate this as a sequence-to-scalar regression problem. The elevation prof
 
 Our architecture processes terrain and link parameters through parallel pathways before fusion via cross-attention for final prediction. The design uses cross-attention to allow the model to selectively attend to terrain features most relevant to the specific link parameters.
 
-<img src="docs/model_cross_attention.png" alt="Model Architecture with Cross-Attention" width="500">
+![Model Architecture with Cross-Attention](docs/model_cross_attention.png){ width=45% }
 
 *Figure 1: Model architecture showing cross-attention fusion between scalar link parameters and terrain features.*
 
