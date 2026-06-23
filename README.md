@@ -68,22 +68,11 @@ The model outputs median transmission loss along with confidence intervals accou
 
 Recent work has applied machine learning to path loss prediction with promising results:
 
-**Convolutional approaches:** Levie et al. demonstrated that CNNs operating on 2D maps containing building heights and morphology data can predict urban path loss with approximately 8 dB RMSE [2]. These methods excel in cluttered urban environments where buildings dominate propagation characteristics. However, they require extensive 2D map data and computational resources for the convolution operations.
+**Convolutional approaches:** Levie et al. demonstrated that U-Net style CNNs operating on 2D urban maps containing building geometry and transmitter location can predict dense simulated radio maps with RMSE on the order of 1 dB relative to their simulation targets [2]. Their setting is short-range and urban: 256 m maps and path-loss targets generated mainly by WinProp DPM/IRT simulations rather than drive-test measurements. These methods excel in cluttered urban environments where buildings dominate propagation characteristics. However, they require extensive 2D map data and computational resources for the convolution operations.
 
 **Ensemble methods:** Comparative studies of random forests, gradient boosting, and neural networks for path loss prediction found that ensemble methods often outperform traditional empirical models like Okumura-Hata when trained on measurement data [3]. These approaches typically use aggregate features (distance, frequency, terrain roughness statistics) rather than the full elevation profile.
 
-**Transformer-based methods:** Hehn et al. proposed a transformer architecture for link-level path loss prediction from variable-sized 2D building maps [4]. Their work demonstrated that attention mechanisms can identify relevant map regions for propagation prediction, achieving state-of-the-art results on urban datasets. Our work differs by focusing on 1D terrain profiles for rural/suburban environments and by targeting ITM approximation rather than direct measurement fitting.
-
-### 2.3 Surrogate Modeling
-
-Surrogate modeling, also known as metamodeling or response surface methodology, replaces computationally expensive simulations with fast approximations learned from simulation outputs [5]. The approach has been successfully applied across engineering domains:
-
-- **Computational fluid dynamics:** Neural networks approximate CFD solvers with 1000x speedup
-- **Finite element analysis:** Surrogate models enable real-time structural optimization
-- **Weather prediction:** Graph neural networks approximate numerical weather models
-- **Electromagnetic simulation:** Machine learning accelerates antenna design iteration
-
-The key requirement for surrogate modeling is access to a large corpus of simulator outputs for training. Our work applies these principles to ITM, leveraging the availability of terrain elevation data and efficient ITM implementations to generate millions of training samples.
+**Transformer-based methods:** Hehn et al. proposed a transformer architecture for link-level path-loss prediction from variable-sized 2D maps containing buildings and foliage, with continuous transmitter/receiver coordinates and optional sparse measurement inputs [4]. Their work demonstrated that attention mechanisms can identify relevant map regions for propagation prediction and generalize across map sizes. Our work differs by focusing on 1D terrain profiles for rural/suburban environments and by targeting ITM approximation rather than direct measurement fitting.
 
 ---
 
@@ -344,8 +333,7 @@ Analysis of prediction errors reveals systematic patterns:
 **Improvement from weighted loss:** The weighted loss function, which upweights samples with larger prediction errors, substantially improved tail performance. The 95th percentile error dropped from 39.76 dB to 35.35 dB, indicating the model learned to handle difficult cases better without sacrificing performance on typical cases.
 
 ### 4.7 Improved Pipeline: Log-Scaled Inputs, Terrain Statistics, and Full-Distribution Normalization
-
-A subsequent revision of the data pipeline addressed several issues that had previously limited accuracy and, importantly, had made the earlier metrics optimistic. Four changes were applied together:
+A later revision of the data pipeline, developed with assistance from AI coding models, addressed several issues that had limited accuracy and made the earlier metrics overly optimistic. The revision introduced four changes together:
 
 1. **Biased-sampling correction (largest single effect).** The streamed training corpus is *ordered*, not random: the first ~20,000 records span only ~117–201 dB, whereas the full distribution reaches ~318 dB (mean $\approx 206$ dB, $\sigma \approx 34$ dB). Taking the leading records—or limiting samples without shuffling the source—therefore trained and validated the model almost entirely on an easy, low-loss slice. We now apply a **source-level shuffle that randomizes file/shard order before sampling**, so both the training and validation streams are representative of the full loss range. This makes the reported numbers honest but also harder, because the difficult high-loss tail is now included in evaluation.
 
@@ -413,10 +401,10 @@ The self-attention mechanism is well-suited to terrain-based propagation modelin
 
 ### 5.3 Comparison with Prior Work
 
-| Approach | Input Type | Target | Environment | Reported Accuracy |
-|----------|------------|--------|-------------|-------------------|
-| Levie et al. [2] | 2D building maps | Measurements | Urban | ~8 dB RMSE |
-| Hehn et al. [4] | 2D building maps | Measurements | Urban | State-of-art |
+| Approach | Input Type | Target | Environment | Reported Result |
+|----------|------------|--------|-------------|-----------------|
+| Levie et al. [2] | 2D building maps + Tx location | WinProp DPM/IRT simulated radio maps, not drive-test measurements | Short-range urban| RMSE on the order of 1 dB |
+| Hehn et al. [4] | Variable-sized 2D maps with buildings/foliage + Tx/Rx coordinates | Link-level path loss from maps and sparse measurements | Urban/map-based | State-of-the-art on their benchmark |
 | Ensemble methods [3] | Aggregate features | Measurements | Various | ~6-10 dB RMSE |
 | **This work** | 1D terrain profile | ITM output | Rural/suburban | **11.01 dB RMSE** |
 
@@ -509,9 +497,7 @@ Based on the current results, the immediate priority is **reducing loss and erro
 
 [3] M. Ayadi, A. Ben Zineb, and S. Tabbane, "A UHF Path Loss Model Using Learning Machine for Heterogeneous Networks," IEEE Transactions on Antennas and Propagation, vol. 65, no. 7, pp. 3675-3683, 2017.
 
-[4] T. M. Hehn, J. Ott, H. Pauli, and S. Faerber, "Transformer-Based Neural Surrogate for Link-Level Path Loss Prediction from Variable-Sized Maps," IEEE Global Communications Conference (GLOBECOM), Kuala Lumpur, Malaysia, 2023.
-
-[5] A. I. J. Forrester, A. Sobester, and A. J. Keane, "Engineering Design via Surrogate Modelling: A Practical Guide," Wiley, 2008.
+[4] T. M. Hehn, T. Orekondy, O. Shental, A. Behboodi, J. Bucheli, A. Doshi, J. Namgoong, T. Yoo, A. Sampath, and J. B. Soriaga, "Transformer-Based Neural Surrogate for Link-Level Path Loss Prediction from Variable-Sized Maps," IEEE Global Communications Conference (GLOBECOM), Kuala Lumpur, Malaysia, 2023. arXiv:2310.04570.
 
 ---
 
