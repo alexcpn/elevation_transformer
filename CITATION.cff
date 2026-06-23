@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "Transformer-Based Surrogate Model for Irregular Terrain Model Path Loss Prediction"
+type: software
+authors:
+  - given-names: Alex Punnen
+    email: alexcpn@gmail.com
+date-released: 2026-02-05
+repository-code: "https://github.com/alexcpn/elevation_transformer"
+url: "https://github.com/alexcpn/elevation_transformer"
+keywords:
+  - path loss prediction
+  - irregular terrain model
+  - transformer
+  - surrogate modeling
+  - radio propagation
+  - deep learning
+  - 6 GHz
+  - CBRS
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.20812779
+    description: "Zenodo archived release"
+doi: 10.5281/zenodo.20812779
