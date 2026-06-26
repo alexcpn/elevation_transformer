@@ -56,6 +56,23 @@ uv pip install --upgrade --force-reinstall torch torchvision torchaudio --index-
 
 ## Training
 
+
+###  Download every parquet shard into /data/itm_loss (~tens of GB; pick any local dir):
+
+```
+  hf download \
+      alexcpn/longely_rice_model \
+      --repo-type dataset \
+      --local-dir /data/itm_loss \
+      --include "*.parquet"
+```
+
+### Then point training at it
+
+```
+  python3 train_model.py --input-dir /data/itm_loss
+```
+
 ```bash
 # Run training
 python train.py

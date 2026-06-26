@@ -250,6 +250,8 @@ log.info(f"Total training steps per epoch (estimated): {total_steps}")
 
 model = create_model()
 loss_function = nn.SmoothL1Loss()
+# The SmoothL1Loss has a side effect -todo check
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 scaler = torch.cuda.amp.GradScaler(enabled=USE_AMP)
 
