@@ -77,6 +77,7 @@ logging.getLogger("datasets").setLevel(logging.WARNING)
 RESUME_FROM_WEIGHTS = "weights/model_weights20260204165247.pth" # trained in my laptio
 RESUME_FROM_WEIGHTS = "weights/model_weights20260205140023.pth" #trained in Runpod from above
 RESUME_FROM_WEIGHTS = None # Train from scratch
+# NOTE: --resume-weights on the command line overrides this; applied just after argparse below.
 
 # Weighted loss: upweight hard examples
 USE_WEIGHTED_LOSS = False  # Disabled - was causing loss spikes
@@ -91,12 +92,34 @@ parser.add_argument("--batch-size", type=int, default=BATCH_SIZE,
 parser.add_argument("--input-dir", type=str, default=None,
                     help="Directory of local parquet files. Default None = stream from "
                          "Hugging Face (alexcpn/longely_rice_model)")
+parser.add_argument("--resume-step", type=int, default=0,
+                    help="Resume after this many completed training steps: skips "
+                         "resume_step*batch_size samples in the deterministic (seed=42) stream "
+                         "and continues the step counter. Pair with the matching checkpoint in "
+                         "RESUME_FROM_WEIGHTS. Requires NUM_WORKERS<=1 for the skip to line up.")
+parser.add_argument("--loss", type=str, default="smoothl1", choices=["smoothl1", "mse"],
+                    help="Regression loss. Default smoothl1 (robust, chosen for the high "
+                         "dynamic range). 'mse' directly optimizes RMSE but is outlier-sensitive "
+                         "- prefer a fresh run when comparing, not a mid-resume switch.")
+parser.add_argument("--resume-weights", type=str, default=None,
+                    help="Path to a checkpoint to resume from; overrides the RESUME_FROM_WEIGHTS "
+                         "set in the script. Accepts both full-state and legacy raw-state_dict files.")
 args = parser.parse_args()
 BATCH_SIZE = args.batch_size
 INPUT_DIR = args.input_dir
+RESUME_STEP = args.resume_step
+LOSS_NAME = args.loss
+# --resume-weights overrides the RESUME_FROM_WEIGHTS set above (RESUME_FROM_WEIGHTS is defined
+# earlier in the file, so this assignment is the effective one when the flag is passed).
+if args.resume_weights is not None:
+    RESUME_FROM_WEIGHTS = args.resume_weights
 NUM_EPOCHS = 1
 LEARNING_RATE = 1e-4
-NUM_WORKERS = 4
+# NOTE: keep at 1 (or 0). With NUM_WORKERS>1 the manual ds.shard() in
+# PathLossDataset.__iter__ only delivers one worker's shard, so a "full epoch" silently
+# trains on ~1/NUM_WORKERS of the data (e.g. 4 workers -> ~1/4). TODO: fix the multi-worker
+# shard path before raising this for data-loading throughput.
+NUM_WORKERS = 1
 DROP_LAST = True  # Set False to allow a smaller final batch
 CHECKPOINT_EVERY = 1000  # Save a (single, rotated) checkpoint to the current dir every N steps
 
@@ -215,7 +238,8 @@ log.info(f"INPUT_DIR: {INPUT_DIR if INPUT_DIR else 'None (Hugging Face streaming
 # log.info(f"Validation samples: {len(val_dataset)}")
 
 # Create datasets from Huggingface datasets
-train_dataset = PathLossDataset(INPUT_DIR, split="train", max_samples=LIMIT_TRAIN_SAMPLES)
+train_dataset = PathLossDataset(INPUT_DIR, split="train", max_samples=LIMIT_TRAIN_SAMPLES,
+                                skip_samples=RESUME_STEP * BATCH_SIZE)
 val_dataset = PathLossDataset(INPUT_DIR, split="val", max_samples=LIMIT_VAL_SAMPLES)
 
 # Helper for rebuilding loaders (useful for fallback if multi-worker streaming stalls)
@@ -249,21 +273,65 @@ log.info(f"Total training steps per epoch (estimated): {total_steps}")
 # ============================================================
 
 model = create_model()
-loss_function = nn.SmoothL1Loss()
-# The SmoothL1Loss has a side effect -todo check
+loss_function = nn.MSELoss() if LOSS_NAME == "mse" else nn.SmoothL1Loss()
+log.info(f"Loss function: {LOSS_NAME}")
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-scaler = torch.cuda.amp.GradScaler(enabled=USE_AMP)
+scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
+
+# Cosine LR decay over the full epoch (eta_min keeps a small floor so late steps still learn).
+# Resumable: its state is saved in the checkpoint and restored below; for legacy checkpoints we
+# fast-forward it to the resume step so the LR matches where training continues.
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer, T_max=max(total_steps, 1), eta_min=LEARNING_RATE * 0.05
+)
 
 model.to('cuda')
 
-# Load pre-trained weights if specified
+# Load pre-trained weights if specified. Supports two checkpoint formats:
+#   - full-state dict {model, optimizer, scaler, scheduler, step}  (new, fully resumable)
+#   - raw model state_dict                                          (legacy, weights only)
 if RESUME_FROM_WEIGHTS and os.path.exists(RESUME_FROM_WEIGHTS):
-    log.info(f"Loading weights from: {RESUME_FROM_WEIGHTS}")
-    model = load_weights(model, RESUME_FROM_WEIGHTS)
-    log.info("Weights loaded successfully. Resuming training.")
+    log.info(f"Loading checkpoint: {RESUME_FROM_WEIGHTS}")
+    ckpt = torch.load(RESUME_FROM_WEIGHTS, weights_only=False)
+    restored_scheduler = False
+    if isinstance(ckpt, dict) and "model" in ckpt:
+        model.load_state_dict(ckpt["model"])
+        if "optimizer" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer"])
+        if "scaler" in ckpt:
+            scaler.load_state_dict(ckpt["scaler"])
+        if "scheduler" in ckpt:
+            scheduler.load_state_dict(ckpt["scheduler"])
+            restored_scheduler = True
+        log.info(f"Full training state restored (checkpoint step={ckpt.get('step', '?')}).")
+    else:
+        # Legacy raw state_dict: model only; optimizer/scaler/scheduler start fresh.
+        model.load_state_dict(ckpt)
+        log.info("Legacy weights-only checkpoint loaded (no optimizer/scheduler state).")
+    # Align the LR schedule to the resume point when it wasn't restored from the checkpoint
+    # (legacy checkpoint, or a checkpoint saved before the scheduler existed).
+    if RESUME_STEP > 0 and not restored_scheduler:
+        for _ in range(min(RESUME_STEP, total_steps)):
+            scheduler.step()
+        log.info(f"Fast-forwarded LR scheduler to step {RESUME_STEP} "
+                 f"(lr={scheduler.get_last_lr()[0]:.2e}).")
+    log.info("Resuming training.")
 elif RESUME_FROM_WEIGHTS:
     log.warning(f"Weights file not found: {RESUME_FROM_WEIGHTS}. Training from scratch.")
+
+
+def save_checkpoint(path, step):
+    """Atomically save a fully-resumable checkpoint (model + optimizer + scaler + scheduler)."""
+    tmp_path = path + ".tmp"
+    torch.save({
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scaler": scaler.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "step": step,
+    }, tmp_path)
+    os.replace(tmp_path, path)  # atomic rename on same filesystem
 
 #orch.compile()
 log.info("Running without torch.compile (more stable for training).")
@@ -274,6 +342,7 @@ log.info("Running without torch.compile (more stable for training).")
 
 log.info("Training model...")
 loss_value_list = []
+step = RESUME_STEP  # ensure defined even if the training loop yields no batches
 def iter_train_batches(loader):
     train_iter = iter(loader)
     first_batch = next(train_iter, None)
@@ -299,7 +368,10 @@ for epoch in range(NUM_EPOCHS):
         log.error("Train loader is empty. Check dataset availability, split, LIMIT_TRAIN_SAMPLES, and DROP_LAST.")
         break
 
-    for step, (features, elevation, targets, mask) in enumerate(train_iter, 1):
+    for local_step, (features, elevation, targets, mask) in enumerate(train_iter, 1):
+        # Global step continues from where a resumed run left off (RESUME_STEP), so the
+        # displayed step / checkpoint counters stay aligned with the full-epoch total_steps.
+        step = RESUME_STEP + local_step
         # Move to GPU
         features = features.cuda(non_blocking=True)
         elevation = elevation.cuda(non_blocking=True)
@@ -323,12 +395,13 @@ for epoch in range(NUM_EPOCHS):
         # Optimizer step with scaler
         scaler.step(optimizer)
         scaler.update()
+        scheduler.step()  # per-step cosine LR decay (resumable via checkpoint)
 
         epoch_loss += loss.item()
         num_batches += 1
 
         print(f"step {step}/{total_steps} - loss: {loss.item():.4f}")
-        if epoch == 0 and step == 1:
+        if epoch == 0 and local_step == 1:
             log.info(f"Features shape: {features.shape}")
             log.info(f"Elevation shape: {elevation.shape}")
             log.info(f"Targets shape: {targets.shape}")
@@ -365,9 +438,7 @@ for epoch in range(NUM_EPOCHS):
         # Resume from this via RESUME_FROM_WEIGHTS. Saved in CWD as requested.
         if CHECKPOINT_EVERY and step % CHECKPOINT_EVERY == 0:
             latest_path = f"./weights/model_weights{datetimestamp}_latest.pth"
-            tmp_path = latest_path + ".tmp"
-            torch.save(model.state_dict(), tmp_path)
-            os.replace(tmp_path, latest_path)  # atomic rename on same filesystem
+            save_checkpoint(latest_path, step)
             log.info(f"Checkpoint saved (rotated): {latest_path} @ step {step}")
 
         # Early stopping: exit when the moving-average loss is very small (stable, not a single
@@ -380,9 +451,7 @@ for epoch in range(NUM_EPOCHS):
                     log.info("Early stop: avg loss over last %d steps = %.6f < %g (step %d).",
                              EARLY_STOP_PATIENCE, avg_recent, EARLY_STOP_LOSS, step)
                     latest_path = f"./weights/model_weights{datetimestamp}_latest.pth"
-                    tmp_path = latest_path + ".tmp"
-                    torch.save(model.state_dict(), tmp_path)
-                    os.replace(tmp_path, latest_path)
+                    save_checkpoint(latest_path, step)
                     log.info(f"Checkpoint saved (rotated): {latest_path} @ step {step}")
                     stop_training = True
                     break
@@ -407,8 +476,12 @@ log.info(f"Validation | Underestimation (<-3dB): {underestimation_count}")
 
 
 save_path = f"./weights/model_weights{datetimestamp}.pth"
-torch.save(model.state_dict(), save_path)
+torch.save(model.state_dict(), save_path)  # raw state_dict: for inference/benchmark/load_weights
 log.info(f"Model weights saved at {save_path}")
+# Also write a fully-resumable checkpoint so training can be continued from the end if needed.
+resume_path = f"./weights/model_weights{datetimestamp}_resume.pth"
+save_checkpoint(resume_path, step)
+log.info(f"Resumable checkpoint saved at {resume_path} @ step {step}")
 log.info("Training Over")
 
 # ============================================================

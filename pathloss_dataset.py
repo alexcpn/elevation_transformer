@@ -22,6 +22,7 @@ class PathLossDataset(IterableDataset):
         split_mod=100,
         val_mods=(0,),
         test_mods=(1,),
+        skip_samples=0,
     ):
         """
         Dataset that loads directly from parquet files using Hugging Face datasets in STREAMING mode.
@@ -64,6 +65,15 @@ class PathLossDataset(IterableDataset):
             full_ds = load_dataset("parquet", data_files=files, split="train", streaming=True)
             self.n_files = len(files)
 
+        # Exact row count from parquet footers (reads metadata only - cheap even for
+        # thousands of files), so __len__/total_steps reflect the real dataset instead of a
+        # hardcoded rows-per-file guess. Only possible for local files; HF streaming stays an
+        # estimate.
+        self._exact_total_rows = None
+        if files is not None:
+            import pyarrow.parquet as pq
+            self._exact_total_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+
         # Apply train/val/test split using modular arithmetic on the (original-order) index.
         # Applied to BOTH the HF and the local-parquet streams so val/test never leak into the
         # train set. The split is deterministic per row (files are sorted), so separate
@@ -71,6 +81,13 @@ class PathLossDataset(IterableDataset):
         # Default: split_mod=100, val_mods=(0,), test_mods=(1,) -> 98% train / 1% val / 1% test.
         val_mods_set = set(val_mods)
         test_mods_set = set(test_mods)
+        # Fraction of rows this split keeps, mirroring the filters below. Used by __len__.
+        if split == "train":
+            self._split_fraction = (split_mod - len(val_mods_set | test_mods_set)) / split_mod
+        elif split == "val":
+            self._split_fraction = len(val_mods_set) / split_mod
+        else:  # test
+            self._split_fraction = len(test_mods_set) / split_mod
         if split == "train":
             self.dataset = full_ds.filter(
                 lambda x, idx: (idx % split_mod) not in val_mods_set and (idx % split_mod) not in test_mods_set,
@@ -97,6 +114,19 @@ class PathLossDataset(IterableDataset):
         # on the original stream index, independent of this shuffle).
         if self.shuffle:
             self.dataset = self.dataset.shuffle(seed=42, buffer_size=self.shuffle_buffer_size)
+
+        # RESUME: skip the already-trained samples so a restart continues where it stopped.
+        # This is correct ONLY because the shuffle seed is fixed (seed=42) and NUM_WORKERS<=1,
+        # so the stream order is identical across runs. Applied AFTER the shuffle so it skips the
+        # exact ordered samples the previous run consumed. NOTE: .skip() streams and discards
+        # those rows (no model compute), so the first batch after a resume can take a while.
+        # Small caveat: empty-elevation rows dropped in __iter__ aren't counted as steps, so a
+        # handful of already-seen samples near the boundary may repeat - negligible, never lost.
+        self.skip_samples = skip_samples
+        if skip_samples:
+            self.dataset = self.dataset.skip(skip_samples)
+            print(f"RESUME: skipping first {skip_samples:,} samples of the deterministic stream "
+                  f"({split}); streaming past them now, first batch will be slow.")
 
         # Apply max_samples limit if specified (now over the shuffled stream)
         if max_samples is not None:
@@ -171,9 +201,14 @@ class PathLossDataset(IterableDataset):
             yield features, elevation, target, mask
 
     def __len__(self):
-        # We cannot easily know the exact length in streaming mode without scanning.
-        # Returning an estimate based on file count if needed, or raising NotImplementedError.
-        # Ideally, we return a rough count so the progress bar works (even if inaccurate).
-        # Based on previous logs: ~26.7M samples for 4741 files -> ~5650 samples/file
-        estimated_samples = self.n_files * 5650
-        return estimated_samples
+        # Local files: exact total row count (from parquet footers) scaled by this split's
+        # fraction. HF streaming: fall back to a per-file estimate (~6818 rows/file observed).
+        # Note this can't subtract rows skipped for empty elevation profiles (see __iter__),
+        # so it's a tight upper bound rather than an exact count.
+        if self._exact_total_rows is not None:
+            n = int(self._exact_total_rows * self._split_fraction)
+        else:
+            n = int(self.n_files * 6818 * self._split_fraction)
+        if self.max_samples is not None:
+            n = min(n, self.max_samples)
+        return n
