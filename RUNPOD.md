@@ -56,27 +56,75 @@ uv pip install --upgrade --force-reinstall torch torchvision torchaudio --index-
 
 ## Training
 
+### Download the dataset locally
 
-###  Download every parquet shard into /data/itm_loss (~tens of GB; pick any local dir):
-
-```
-  hf download \
-      alexcpn/longely_rice_model \
-      --repo-type dataset \
-      --local-dir /data/itm_loss \
-      --include "*.parquet"
-```
-
-### Then point training at it
-
-```
-  python3 train_model.py --input-dir /data/itm_loss
-```
+Download every parquet shard into `/data/itm_loss` (~tens of GB; pick any local
+directory with enough disk space):
 
 ```bash
-# Run training
-python train.py
+hf download \
+  alexcpn/longely_rice_model \
+  --repo-type dataset \
+  --local-dir /data/itm_loss \
+  --include "*.parquet"
+```
 
-# View training loss
-python utils/loss_viewer.py
+Then point training at it:
+
+```bash
+python train_model.py --batch-size 320 --input-dir /workspace/itm_loss/ \
+    --resume-weights ./weights/model_weights20260626XXXXXX_latest.pth \
+    --resume-step 27000
+```
+
+### Run over SSH with tmux
+
+Use `tmux` when you want to reconnect and watch progress interactively:
+
+```bash
+cd /workspace/elevation_transformer
+tmux new -s elevation-train
+python3 train_model.py --input-dir /data/itm_loss --batch-size 64
+```
+
+Detach without stopping training with `Ctrl-b`, then `d`.
+
+Reconnect later:
+
+```bash
+tmux attach -t elevation-train
+```
+
+Useful session commands:
+
+```bash
+tmux ls
+tmux kill-session -t elevation-train
+```
+
+### Run over SSH with nohup
+
+Use `nohup` when you just want training to keep running after SSH disconnects:
+
+```bash
+cd /workspace/elevation_transformer
+nohup python3 train_model.py --input-dir /data/itm_loss --batch-size 64 > train.log 2>&1 &
+```
+
+Check progress:
+
+```bash
+tail -f train.log
+```
+
+Check whether it is still running:
+
+```bash
+ps -ef | grep train_model.py | grep -v grep
+```
+
+Stop it if needed:
+
+```bash
+pkill -f "python3 train_model.py"
 ```
