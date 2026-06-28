@@ -7,3 +7,4 @@ test/*
 itm_loss/*
 itm/__pycache__/*
 itm/build/*
+wandb/*

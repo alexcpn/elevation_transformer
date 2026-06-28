@@ -20,6 +20,8 @@ Trained on ITM-generated samples spanning the 6 GHz band with distances from 1.3
 
 **Source code:** [alexcpn/elevation_transformer](https://github.com/alexcpn/elevation_transformer)
 
+**Trained weights:** [Hugging Face](https://huggingface.co/alexcpn/elevation_transformer) · [W&B Artifact `pathloss_transformer:v0`](https://wandb.ai/alexcpn/elevation_transformer/artifacts/model/pathloss_transformer/v0/overview)
+
 ---
 
 ## 1. Introduction
