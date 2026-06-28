@@ -14,7 +14,7 @@ Radio propagation path loss prediction is essential for wireless network plannin
 
 We propose a transformer-based neural network surrogate that learns to approximate ITM path loss predictions from terrain elevation profiles and link parameters. Unlike prior deep learning approaches that operate on 2D geographic maps, our method treats the 1D elevation profile along the propagation path as a sequence, leveraging self-attention to capture terrain-induced diffraction and obstruction effects at arbitrary positions. The model ingests the elevation sequence alongside transmission frequency, antenna heights, and link distance to predict path loss in a single forward pass.
 
-Trained on ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model approximates ITM path loss to within a few decibels. An initial pipeline reached **17.85 dB RMSE** (median error 5.00 dB), and a subsequently revised pipeline—log-scaled link parameters, explicit terrain mean/roughness features, full-distribution target normalization, and a corrected source-shuffled sampling scheme—reaches **11.01 dB RMSE** (median error 3.80 dB) on a representative, full-loss-range validation set, even from a partially trained checkpoint (Section 4.6). The training dataset is publicly available at `https://huggingface.co/datasets/alexcpn/longely_rice_model/tree/main` (14 GB). These results validate that the transformer architecture can effectively learn terrain-propagation relationships and that the training loss can be driven down substantially with the right data pipeline and normalization. Direct benchmarking on the current workstation shows that the present transformer inference path is still substantially slower than the native ITM implementation: **1314.8 us** per prediction for the model versus **11.0 us** for direct ITM at batch size 64 over 100 timed runs. Whether this gap is fundamental or an artifact of the present implementation remains open (Section 4.4), so we frame this work as concept validation rather than acceleration.
+Trained on ITM-generated samples spanning the 6 GHz band with distances from 1.3 to 200 km across diverse terrain types, our model approximates ITM path loss to within a few decibels. An initial pipeline reached **17.85 dB RMSE** (median error 5.00 dB), and a subsequently revised pipeline—log-scaled link parameters, explicit terrain mean/roughness features, full-distribution target normalization, and a corrected source-shuffled sampling scheme—reaches **7.36 dB RMSE** (median error 2.99 dB) on a held-out validation set of 322,915 samples after a complete training epoch over the full ~31.6-million-sample training split (Section 4.6). The training dataset is publicly available at `https://huggingface.co/datasets/alexcpn/longely_rice_model/tree/main` (14 GB). These results validate that the transformer architecture can effectively learn terrain-propagation relationships and that the training loss can be driven down substantially with the right data pipeline and normalization. Direct benchmarking on the current workstation shows that the present transformer inference path is still substantially slower than the native ITM implementation: **1314.8 us** per prediction for the model versus **11.0 us** for direct ITM at batch size 64 over 100 timed runs. Whether this gap is fundamental or an artifact of the present implementation remains open (Section 4.4), so we frame this work as concept validation rather than acceleration.
 
 **Keywords:** path loss prediction, irregular terrain model, transformer, surrogate modeling, radio propagation, deep learning, 6 GHz, CBRS
 
@@ -43,7 +43,7 @@ This paper presents a transformer-based neural network that learns to approximat
 
 2. **Transformer architecture for propagation:** We demonstrate that multi-head self-attention mechanisms effectively capture terrain-induced propagation effects, including diffraction around obstacles at arbitrary positions along the path.
 
-3. **Large-scale surrogate model:** The current hosted corpus contains approximately 32.3 million ITM samples covering the 6 GHz band. The revised model checkpoint received approximately 7.2 million sample presentations across two partial training segments and achieved 11.01 dB RMSE on a representative full-distribution validation set (Section 4.6), an 82% improvement from baseline.
+3. **Large-scale surrogate model:** The current hosted corpus contains approximately 32.3 million ITM samples covering the 6 GHz band. The revised model completed a full training epoch over the ~31.6-million-sample training split and achieved 7.36 dB RMSE on a held-out 322,915-sample validation set (Section 4.6), an 88% improvement from baseline.
 
 4. **Concept validation with runtime reality check:** We show that attention-based sequence modeling can learn the ITM mapping and reduce loss substantially, while also documenting that the present implementation is not yet competitive with native ITM in inference throughput and that the cause of this gap has not yet been isolated.
 
@@ -236,20 +236,21 @@ These settings reflect the original pipeline, in which a low learning rate and a
 
 ### 4.1 Accuracy Metrics
 
-Performance of the revised pipeline (Section 4.6) on a representative, full-loss-range validation set (5,000 streamed samples—fewer than the 62,500-sample evaluation used for the earlier pipeline) from a partially trained checkpoint:
+Performance of the revised pipeline (Section 4.6) on the full held-out validation set (322,915 samples, spanning the complete loss distribution) after a complete training epoch:
 
 | Metric | Value |
 |--------|-------|
-| RMSE | 11.01 dB |
-| MAE | 6.70 dB |
-| Median Error | 3.80 dB |
-| 90th Percentile Error | 15.41 dB |
+| RMSE | 7.36 dB |
+| MAE | 4.73 dB |
+| Median Error | 2.99 dB |
+| 90th Percentile Error | 10.71 dB |
+| 95th Percentile Error | 14.67 dB |
 
-The median error of 3.80 dB indicates that half of all predictions are within about 4 dB of ITM outputs—a level of accuracy suitable for network planning applications and coverage estimation.
+The median error of 2.99 dB indicates that half of all predictions are within about 3 dB of ITM outputs—a level of accuracy suitable for network planning applications and coverage estimation. The gap between the median (2.99 dB) and the tail percentiles (p90 10.71 dB, p95 14.67 dB) shows that accuracy is excellent for the bulk of the distribution, with a minority of hard, high-loss cases dominating the RMSE.
 
 ### 4.2 Training Loss
 
-![Training Loss Over Steps](docs/taining_loss.png)
+![Training Loss Over Steps](docs/training_loss.png)
 *Figure 2: Training loss over ~130,000 steps (combined runs). Loss drops rapidly from ~230 to ~10 in the first 10k steps, then plateaus around 3-10 with high variance.*
 
 The training loss curve reveals:
@@ -267,11 +268,11 @@ The final accuracy was achieved through systematic improvements to the model arc
 | Baseline (no normalization) | 62.02 | 52.71 | 55.32 | 101.22 |
 | + Input/target normalization | 42.62 | 35.49 | 35.82 | 84.54 |
 | + Dataset correction & training | 17.85 | 10.94 | 5.00 | 41.59 |
-| + Revised pipeline (Section 4.6)\* | **11.01** | **6.70** | **3.80** | — |
+| + Revised pipeline (Section 4.6)\* | **7.36** | **4.73** | **2.99** | **14.67** |
 
-\*Measured on 5,000 full-distribution streamed samples (fewer than the 62,500-sample evaluation used for the rows above) from the partially trained checkpoint described in Section 4.6; the 95th percentile was not recorded (90th-percentile error 15.41 dB). Because the validation set and loss-range coverage differ, this row is not strictly comparable to the rows above.
+\*Measured on the full held-out validation set of 322,915 samples spanning the complete loss distribution, after a complete training epoch over the ~31.6-million-sample training split (Section 4.6); 90th-percentile error 10.71 dB. Because the validation set and loss-range coverage differ, this row is not strictly comparable to the rows above, but it is both more representative and more accurate.
 
-**Total improvement: 82% reduction in RMSE (62.02 → 11.01 dB)**
+**Total improvement: 88% reduction in RMSE (62.02 → 7.36 dB)**
 
 Key improvements and their contributions:
 
@@ -279,7 +280,7 @@ Key improvements and their contributions:
 
 2. **Dataset correction:** Fixing issues in the data loading pipeline—ensuring proper alignment between elevation profiles and their corresponding path loss labels—yielded the largest improvement (RMSE reduced from 43 dB to 18 dB).
 
-3. **Extended training:** The original pipeline completed training on the then-current 7.8M-sample corpus, allowing the model to learn robust terrain-propagation relationships. The later revised-pipeline checkpoint used the expanded corpus but stopped after approximately 7.2M sample presentations.
+3. **Extended training:** The original pipeline completed training on the then-current 7.8M-sample corpus, allowing the model to learn robust terrain-propagation relationships. The revised pipeline then completed a full epoch over the expanded ~31.6M-sample corpus (98,891 steps), which closed the residual train/validation gap and yielded the final 7.36 dB RMSE.
 
 The dramatic improvement from dataset correction highlights the importance of data quality in deep learning—architectural changes matter less than having correct training data.
 
@@ -332,11 +333,11 @@ The single most impactful of these changes is **scaling the target down to unit 
 
 In our runs the unnormalized configuration held the training loss at $\approx$ the dataset-mean value (no measurable descent), whereas the normalized configuration drove the normalized SmoothL1 loss below $0.01$ within a few thousand steps. Target normalization is thus a prerequisite for the other three improvements to take effect.
 
-This pipeline produces the headline accuracy reported in Section 4.1 (11.01 dB RMSE, 3.80 dB median) on a full-distribution validation set of 5,000 streamed samples. It is achieved by a partially trained checkpoint that received approximately **7.2 million sample presentations**, equivalent to **~23% of the current 31.7-million-sample training split**, across an initial run and a resumed run. The resumed log contains 14,910 steps and 5,725,440 samples; the remainder is estimated from the initial segment's elapsed time at the observed throughput. Because resuming restarts the deterministic streaming loader, the two segments may overlap, so 7.2 million must not be interpreted as a count of unique records seen. Evaluation uses the *full* loss distribution rather than the biased low-loss slice used for the earlier 17.85 dB figure, so the two numbers are not strictly comparable, but the revised pipeline is both more representative and more accurate. Training was interrupted by an external process termination on the cloud instance (not a model failure); rotating checkpoints preserved the weights.
+This pipeline produces the headline accuracy reported in Section 4.1 (7.36 dB RMSE, 2.99 dB median) on the full held-out validation set of 322,915 samples. It is achieved after a **complete training epoch** over the **~31.6-million-sample training split** (98,891 steps at batch size 320), accumulated across an initial run and subsequent resumed runs that together cover the full pass. Evaluation uses the *full* 10% validation split (the complete loss distribution) rather than the biased low-loss slice used for the earlier 17.85 dB figure, so the two numbers are not strictly comparable, but the revised pipeline is both more representative and more accurate.
 
-**Training environment and elapsed time.** The improved model was trained on a single NVIDIA L4 GPU (24 GB VRAM) with CUDA 12.8 and an effective batch size of 384 samples. The initial segment ran for approximately 1 h 32 min, followed by a resumed segment lasting approximately 6 h, for about **7 h 32 min of active training time**. The resumed run achieved approximately 2,485 steps/hour (265 samples/s) and processed 5,725,440 samples; applying that measured rate to the initial segment gives an estimated cumulative total of approximately **7.2 million processed samples**. With approximately 31.7 million samples in the current training split, a complete epoch would require about 82,470 steps and **33 hours** on the same hardware and configuration. Training was stopped early because of cost considerations and satisfactory training-loss and validation results.
+**Training environment and elapsed time.** The improved model was trained on a single NVIDIA L4 GPU (24 GB VRAM) with CUDA 12.8 at batch size 320. The final resumed segment processed steps 27,000–98,891 (~23.0 million sample presentations) in approximately 23 hours at about 3,100 steps/hour (~278 samples/s); together with the earlier segments (steps 0–27,000) this completes one full epoch of 98,891 steps over the ~31.6-million-sample training split. Resuming restarts the deterministic streaming loader, so the per-segment sample counts may overlap slightly and should not be read as unique records.
 
-**Training loss.** Over the 14,910 logged steps the normalized SmoothL1 training loss fell from a resumed start of $\approx 0.09$ to a moving average of $\approx 0.008$ (minimum 0.0013). Using the approximate relation $\text{RMSE}_\text{dB} \approx \sqrt{2\,\mathcal{L}}\cdot\sigma$, a normalized loss of 0.008 corresponds to roughly 4 dB on the training stream, indicating a residual train/validation gap (~4 dB vs ~11 dB) that further training and regularization are expected to narrow.
+**Training loss.** Over the epoch the normalized SmoothL1 training loss converged to an average of $\approx 0.0251$, with the final thousands of steps oscillating around $0.005$–$0.016$. The held-out validation loss was $\approx 0.0229$, essentially matching the training loss—the ~4 dB train/validation gap reported for the earlier partially trained checkpoint has effectively closed once training completed a full pass over the data. Using the approximate relation $\text{RMSE}_\text{dB} \approx \sqrt{2\,\mathcal{L}}\cdot\sigma$, the validation loss is consistent with the measured 7.36 dB RMSE.
 
 ---
 
@@ -377,7 +378,7 @@ The self-attention mechanism is well-suited to terrain-based propagation modelin
 | Levie et al. [2] | 2D building maps + Tx location | WinProp DPM/IRT simulated radio maps, not drive-test measurements | Short-range urban| RMSE on the order of 1 dB |
 | Hehn et al. [4] | Variable-sized 2D maps with buildings/foliage + Tx/Rx coordinates | Link-level path loss from maps and sparse measurements | Urban/map-based | State-of-the-art on their benchmark |
 | Ensemble methods [3] | Aggregate features | Measurements | Various | ~6-10 dB RMSE |
-| **This work** | 1D terrain profile | ITM output | Rural/suburban | **11.01 dB RMSE** |
+| **This work** | 1D terrain profile | ITM output | Rural/suburban | **7.36 dB RMSE** |
 
 Our approach differs fundamentally by:
 - Using 1D sequences rather than 2D images, simplifying the input representation
@@ -390,11 +391,11 @@ The comparison is not direct since we predict ITM outputs rather than measuremen
 
 ## 6. Conclusion
 
-We presented a transformer-based surrogate model for approximating ITM path loss prediction. By treating terrain elevation profiles as sequences and applying multi-head self-attention, our model learns to approximate ITM with **11.01 dB RMSE** (median error 3.80 dB). The main result is therefore conceptual: attention-based sequence models can learn useful terrain-propagation relationships from ITM-generated data, and the loss decreases materially as the model and data pipeline are improved. Direct benchmarking shows that the current implementation does not yet provide a runtime win over native ITM: the transformer requires **1,314.8 us** per prediction versus **11.0 us** for direct ITM on the measured workload. At the same time, we have not yet done enough systems-level profiling to say whether this slowdown is inherent to the present architecture or largely an implementation and optimization issue.
+We presented a transformer-based surrogate model for approximating ITM path loss prediction. By treating terrain elevation profiles as sequences and applying multi-head self-attention, our model learns to approximate ITM with **7.36 dB RMSE** (median error 2.99 dB). The main result is therefore conceptual: attention-based sequence models can learn useful terrain-propagation relationships from ITM-generated data, and the loss decreases materially as the model and data pipeline are improved. Direct benchmarking shows that the current implementation does not yet provide a runtime win over native ITM: the transformer requires **1,314.8 us** per prediction versus **11.0 us** for direct ITM on the measured workload. At the same time, we have not yet done enough systems-level profiling to say whether this slowdown is inherent to the present architecture or largely an implementation and optimization issue.
 
 ### 6.1 Key Findings
 
-The iterative improvement from 62.02 dB to 11.01 dB RMSE (**82% reduction**, progression in Section 4.3) validates the core hypothesis that transformer architectures can learn terrain-propagation relationships from ITM data. Specifically:
+The iterative improvement from 62.02 dB to 7.36 dB RMSE (**88% reduction**, progression in Section 4.3) validates the core hypothesis that transformer architectures can learn terrain-propagation relationships from ITM data. Specifically:
 
 1. **The mapping is learnable:** self-attention captures terrain-propagation relationships without explicit physics modeling.
 2. **Normalization is a prerequisite:** scaling inputs and—critically—the target to unit range is what makes gradient descent effective (Section 4.6); without it the model barely beats predicting the mean.
@@ -404,7 +405,7 @@ The iterative improvement from 62.02 dB to 11.01 dB RMSE (**82% reduction**, pro
 
 ### 6.2 Practical Applications
 
-With a median error of 3.80 dB, the current model is still useful for:
+With a median error of 2.99 dB, the current model is useful for:
 - **Research prototyping:** Studying whether sequence models can learn terrain-propagation structure from ITM-generated data
 - **Architecture experiments:** Comparing lighter surrogate architectures, distillation strategies, and hybrid physics-informed models
 - **Error analysis:** Identifying which terrain and link configurations remain difficult for learned surrogates
@@ -509,4 +510,4 @@ Outputs are denormalized as: $y = \hat{y} \cdot \sigma + \mu$
 
 ---
 
-*The original-pipeline training completed on February 5, 2026 after one epoch over the then-current 7.8M+ sample corpus. The revised-pipeline checkpoint described in Section 4.6 was trained later with approximately 7.2M sample presentations from the expanded 32.3M-sample corpus.*
+*The original-pipeline training completed on February 5, 2026 after one epoch over the then-current 7.8M+ sample corpus. The revised-pipeline model described in Section 4.6 completed a full epoch (98,891 steps) over the expanded ~31.6M-sample training split on June 28, 2026, reaching 7.36 dB RMSE on the 322,915-sample validation set.*
