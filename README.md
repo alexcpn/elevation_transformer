@@ -97,7 +97,7 @@ We formulate this as a sequence-to-scalar regression problem. The elevation prof
 
 Our architecture processes terrain and link parameters through parallel pathways before fusion via cross-attention for final prediction. The design uses cross-attention to allow the model to selectively attend to terrain features most relevant to the specific link parameters.
 
-![Model Architecture with Cross-Attention](docs/model_cross_attention.png){ width=45% }
+![Model Architecture with Cross-Attention](arxiv/model_cross_attention.png){ width=45% }
 
 *Figure 1: Model architecture showing cross-attention fusion between scalar link parameters and terrain features.*
 
@@ -252,7 +252,7 @@ The median error of 2.99 dB indicates that half of all predictions are within ab
 
 ### 4.2 Training Loss
 
-![Training Loss Over Steps](docs/training_loss.png)
+![Training Loss Over Steps](arxiv/training_loss.png)
 *Figure 2: Training loss over ~130,000 steps (combined runs). Loss drops rapidly from ~230 to ~10 in the first 10k steps, then plateaus around 3-10 with high variance.*
 
 The training loss curve reveals:
